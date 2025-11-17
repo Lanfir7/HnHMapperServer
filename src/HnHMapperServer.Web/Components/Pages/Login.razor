@@ -77,11 +77,27 @@
         @if (_selfRegistrationEnabled)
         {
             <MudDivider Class="my-4" />
-            <MudText Align="Align.Center">
-                Have an invitation code?
-                <MudLink Href="/register" Color="Color.Primary">Register here</MudLink>
+            <MudText Align="Align.Center" Class="mb-2">
+                To create a user
             </MudText>
+            <MudButton Href="/register"
+                       Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       FullWidth="true">
+                Register Here
+            </MudButton>
         }
+
+        <MudText Align="Align.Center" Class="mt-3">
+            Join our Discord server
+        </MudText>
+        <MudText Align="Align.Center" Class="mt-1">
+            <a href="https://discord.gg/PTdMrVeq3q" target="_blank">
+                <img src="https://dcbadge.limes.pink/api/server/PTdMrVeq3q?style=flat&theme=discord"
+                     alt="Join our Discord server"
+                     style="vertical-align: middle;" />
+            </a>
+        </MudText>
     </MudCard>
 </MudContainer>
 </div>
