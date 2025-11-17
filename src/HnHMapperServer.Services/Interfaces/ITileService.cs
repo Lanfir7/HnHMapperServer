@@ -17,7 +17,7 @@ public interface ITileService
     /// <summary>
     /// Updates the zoom level by combining 4 sub-tiles into one parent tile
     /// </summary>
-    Task UpdateZoomLevelAsync(int mapId, Coord coord, int zoom, string tenantId, string gridStorage);
+    Task UpdateZoomLevelAsync(int mapId, Coord coord, int zoom, string tenantId, string gridStorage, List<TileData>? preloadedTiles = null);
 
     /// <summary>
     /// Rebuilds all zoom levels for all tiles (admin operation)

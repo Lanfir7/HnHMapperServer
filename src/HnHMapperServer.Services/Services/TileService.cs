@@ -57,17 +57,34 @@ public class TileService : ITileService
         return await _tileRepository.GetTileAsync(mapId, coord, zoom);
     }
 
-    public async Task UpdateZoomLevelAsync(int mapId, Coord coord, int zoom, string tenantId, string gridStorage)
+    public async Task UpdateZoomLevelAsync(int mapId, Coord coord, int zoom, string tenantId, string gridStorage, List<TileData>? preloadedTiles = null)
     {
         using var img = new Image<Rgba32>(100, 100);
         img.Mutate(ctx => ctx.BackgroundColor(Color.Transparent));
+
+        int loadedSubTiles = 0;
 
         for (int x = 0; x <= 1; x++)
         {
             for (int y = 0; y <= 1; y++)
             {
                 var subCoord = new Coord(coord.X * 2 + x, coord.Y * 2 + y);
-                var td = await GetTileAsync(mapId, subCoord, zoom - 1);
+
+                // Use preloaded tiles if available (for background services without HTTP context)
+                // Otherwise fall back to repository query (for normal HTTP requests)
+                TileData? td;
+                if (preloadedTiles != null)
+                {
+                    td = preloadedTiles.FirstOrDefault(t =>
+                        t.MapId == mapId &&
+                        t.Zoom == zoom - 1 &&
+                        t.Coord.X == subCoord.X &&
+                        t.Coord.Y == subCoord.Y);
+                }
+                else
+                {
+                    td = await GetTileAsync(mapId, subCoord, zoom - 1);
+                }
 
                 if (td == null || string.IsNullOrEmpty(td.File))
                     continue;
@@ -83,12 +100,22 @@ public class TileService : ITileService
                     // Resize to 50x50 and place in appropriate quadrant
                     using var resized = subImg.Clone(ctx => ctx.Resize(50, 50));
                     img.Mutate(ctx => ctx.DrawImage(resized, new Point(50 * x, 50 * y), 1f));
+                    loadedSubTiles++;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Failed to load sub-tile {File}", filePath);
                 }
             }
+        }
+
+        if (loadedSubTiles == 0)
+        {
+            _logger.LogWarning("Zoom tile Map={MapId} Zoom={Zoom} Coord={Coord} has NO sub-tiles loaded - creating empty transparent tile", mapId, zoom, coord);
+        }
+        else if (loadedSubTiles < 4)
+        {
+            _logger.LogDebug("Zoom tile Map={MapId} Zoom={Zoom} Coord={Coord} has only {Count}/4 sub-tiles loaded", mapId, zoom, coord, loadedSubTiles);
         }
 
         // Save the combined tile to tenant-specific directory
@@ -293,13 +320,14 @@ public class TileService : ITileService
                             oldFileSizeBytes = new FileInfo(oldFilePath).Length;
                         }
 
-                        // Regenerate the zoom tile
+                        // Regenerate the zoom tile, passing preloaded tiles to avoid query filter issues
                         await UpdateZoomLevelAsync(
                             zoomTile.MapId,
                             zoomTile.Coord,
                             zoom,
                             zoomTile.TenantId,
-                            gridStorage);
+                            gridStorage,
+                            tenantTiles);
 
                         // Adjust quota: UpdateZoomLevelAsync already increments for the new file,
                         // so we need to decrement the old file size
