@@ -17,6 +17,10 @@ public class TimerCheckService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TimerCheckService> _logger;
 
+    // Fixed warning intervals: 1 day, 4 hours, 1 hour, 10 minutes
+    private static readonly int[] WARNING_INTERVALS = [1440, 240, 60, 10];
+    private const int CHECK_INTERVAL_SECONDS = 30;
+
     public TimerCheckService(
         IServiceScopeFactory scopeFactory,
         ILogger<TimerCheckService> logger)
@@ -38,6 +42,7 @@ public class TimerCheckService : BackgroundService
                 var timerService = scope.ServiceProvider.GetRequiredService<ITimerService>();
                 var notificationService = scope.ServiceProvider.GetRequiredService<INotificationService>();
                 var updateNotificationService = scope.ServiceProvider.GetRequiredService<IUpdateNotificationService>();
+                var timerWarningService = scope.ServiceProvider.GetRequiredService<ITimerWarningService>();
 
                 // Get all active tenants
                 var tenants = await db.Tenants
@@ -65,11 +70,27 @@ public class TimerCheckService : BackgroundService
                             await ProcessExpiredTimer(timer, notificationService, timerService, updateNotificationService);
                             expiredCount++;
                         }
-                        // Timer is nearing expiry - send pre-warning
-                        else if (timeUntilReady > 0 && timeUntilReady <= 5 && !timer.PreExpiryWarningSent)
+                        // Check each warning interval (1 day, 4 hours, 1 hour, 10 minutes)
+                        else if (timeUntilReady > 0)
                         {
-                            await ProcessPreExpiryWarning(timer, notificationService, timerService, updateNotificationService);
-                            warningCount++;
+                            foreach (var warningMinutes in WARNING_INTERVALS)
+                            {
+                                // Check if we're within the warning window for this interval
+                                // Use a tolerance based on check interval (30 seconds = 0.5 minutes)
+                                var tolerance = CHECK_INTERVAL_SECONDS / 60.0;
+
+                                if (timeUntilReady <= warningMinutes && timeUntilReady > (warningMinutes - tolerance))
+                                {
+                                    // Check if this specific warning already sent
+                                    var warningSent = await timerWarningService.HasWarningSentAsync(timer.Id, warningMinutes);
+
+                                    if (!warningSent)
+                                    {
+                                        await ProcessPreExpiryWarning(timer, warningMinutes, notificationService, updateNotificationService, timerWarningService);
+                                        warningCount++;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -189,13 +210,33 @@ public class TimerCheckService : BackgroundService
     /// </summary>
     private async Task ProcessPreExpiryWarning(
         TimerEntity timer,
+        int warningMinutes,
         INotificationService notificationService,
-        ITimerService timerService,
-        IUpdateNotificationService updateNotificationService)
+        IUpdateNotificationService updateNotificationService,
+        ITimerWarningService timerWarningService)
     {
         try
         {
             var minutesRemaining = (int)(timer.ReadyAt - DateTime.UtcNow).TotalMinutes;
+
+            // Format time remaining in a human-readable way
+            string timeDescription = warningMinutes switch
+            {
+                1440 => "1 day",
+                240 => "4 hours",
+                60 => "1 hour",
+                10 => "10 minutes",
+                _ => $"{minutesRemaining} minutes"
+            };
+
+            // Determine priority based on warning level
+            string priority = warningMinutes switch
+            {
+                1440 or 240 => "Normal",
+                60 => "High",
+                10 => "Urgent",
+                _ => "Normal"
+            };
 
             // Create warning notification
             var notificationDto = await notificationService.CreateAsync(new CreateNotificationDto
@@ -203,18 +244,18 @@ public class TimerCheckService : BackgroundService
                 TenantId = timer.TenantId,
                 UserId = timer.UserId,
                 Type = "TimerPreExpiryWarning",
-                Title = $"{timer.Title} - {minutesRemaining}m remaining",
-                Message = $"Timer will expire in approximately {minutesRemaining} minutes",
+                Title = $"{timer.Title} - {timeDescription} remaining",
+                Message = $"Timer will expire in approximately {timeDescription}",
                 ActionType = timer.Type == "Marker" ? "NavigateToMarker" : "NoAction",
                 ActionData = timer.Type == "Marker"
                     ? JsonSerializer.Serialize(new { markerId = timer.MarkerId, customMarkerId = timer.CustomMarkerId })
                     : null,
-                Priority = "Normal",
-                ExpiresAt = DateTime.UtcNow.AddHours(1)
+                Priority = priority,
+                ExpiresAt = DateTime.UtcNow.AddHours(warningMinutes >= 240 ? 24 : 1)
             });
 
-            // Mark pre-warning as sent
-            await timerService.MarkPreExpiryWarningSentAsync(timer.Id);
+            // Mark this specific warning as sent
+            await timerWarningService.MarkWarningSentAsync(timer.Id, warningMinutes);
 
             // Broadcast SSE event for new notification
             var notificationEntity = new NotificationEntity
@@ -235,14 +276,14 @@ public class TimerCheckService : BackgroundService
             updateNotificationService.NotifyNotificationCreated(notificationEvent);
 
             _logger.LogInformation(
-                "Pre-expiry warning sent for timer {TimerId}: '{Title}' ({Minutes}m remaining)",
-                timer.Id, timer.Title, minutesRemaining);
+                "Pre-expiry warning sent for timer {TimerId}: '{Title}' ({TimeDesc} remaining, {WarningMinutes}m interval)",
+                timer.Id, timer.Title, timeDescription, warningMinutes);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "Failed to send pre-expiry warning for timer {TimerId}",
-                timer.Id);
+                "Failed to send pre-expiry warning for timer {TimerId} at {WarningMinutes}m interval",
+                timer.Id, warningMinutes);
         }
     }
 }

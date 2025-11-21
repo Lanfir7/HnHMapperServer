@@ -3,6 +3,7 @@ using HnHMapperServer.Infrastructure.Data;
 using HnHMapperServer.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HnHMapperServer.Services.Services;
 
@@ -14,13 +15,16 @@ public class NotificationService : INotificationService
 {
     private readonly ApplicationDbContext _db;
     private readonly ILogger<NotificationService> _logger;
+    private readonly IServiceScopeFactory _scopeFactory;
 
     public NotificationService(
         ApplicationDbContext db,
-        ILogger<NotificationService> logger)
+        ILogger<NotificationService> logger,
+        IServiceScopeFactory scopeFactory)
     {
         _db = db;
         _logger = logger;
+        _scopeFactory = scopeFactory;
     }
 
     /// <summary>
@@ -50,7 +54,34 @@ public class NotificationService : INotificationService
             "Created notification {Id} of type {Type} for tenant {TenantId}",
             entity.Id, entity.Type, entity.TenantId);
 
-        return MapToDto(entity);
+        var notificationDto = MapToDto(entity);
+
+        // Send to Discord if enabled (fire-and-forget, don't block notification creation)
+        // Create new scope to avoid DbContext concurrency issues
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var tenantService = scope.ServiceProvider.GetRequiredService<ITenantService>();
+                var discordWebhookService = scope.ServiceProvider.GetRequiredService<IDiscordWebhookService>();
+
+                var tenant = await tenantService.GetTenantAsync(dto.TenantId);
+                if (tenant?.DiscordNotificationsEnabled == true &&
+                    !string.IsNullOrWhiteSpace(tenant.DiscordWebhookUrl))
+                {
+                    await discordWebhookService.SendNotificationAsync(notificationDto, tenant.DiscordWebhookUrl);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to send Discord notification for notification {Id}",
+                    entity.Id);
+            }
+        });
+
+        return notificationDto;
     }
 
     /// <summary>

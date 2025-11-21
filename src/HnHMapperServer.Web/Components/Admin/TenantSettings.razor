@@ -121,6 +121,81 @@
                 }
             </MudPaper>
 
+            @* Discord Integration *@
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudText Typo="Typo.h6" Class="mb-3">
+                    <MudIcon Icon="@Icons.Material.Filled.Notifications" Class="me-2" />
+                    Discord Integration
+                </MudText>
+                <MudText Typo="Typo.body2" Class="mb-3">
+                    Send timer notifications to a Discord channel via webhook. Notifications will be sent when timers expire.
+                </MudText>
+
+                <MudSwitch @bind-Value="@_discordEnabled"
+                          Label="Enable Discord Notifications"
+                          Color="Color.Primary"
+                          Class="mb-3" />
+
+                @if (_discordEnabled)
+                {
+                    <MudTextField Label="Discord Webhook URL"
+                                 @bind-Value="@_discordWebhookUrl"
+                                 Variant="Variant.Outlined"
+                                 Placeholder="https://discord.com/api/webhooks/..."
+                                 HelperText="Paste your Discord webhook URL here"
+                                 Class="mb-3"
+                                 Lines="2" />
+
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                        <strong>How to get your webhook URL:</strong>
+                        <ol style="margin: 8px 0; padding-left: 20px;">
+                            <li>Open Discord and go to your server</li>
+                            <li>Right-click the channel → Edit Channel → Integrations</li>
+                            <li>Click "Create Webhook" or "View Webhooks"</li>
+                            <li>Click "New Webhook" → Name it "HavenMap Notifications"</li>
+                            <li>Click "Copy Webhook URL"</li>
+                        </ol>
+                    </MudAlert>
+                }
+
+                <MudStack Row="true" Spacing="2" Class="mt-3">
+                    <MudButton Variant="Variant.Filled"
+                              Color="Color.Primary"
+                              StartIcon="@Icons.Material.Filled.Save"
+                              OnClick="SaveDiscordSettings"
+                              Disabled="@_isSavingDiscord">
+                        @if (_isSavingDiscord)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="me-2" />
+                            <span>Saving...</span>
+                        }
+                        else
+                        {
+                            <span>Save Discord Settings</span>
+                        }
+                    </MudButton>
+
+                    @if (_discordEnabled && !string.IsNullOrWhiteSpace(_discordWebhookUrl))
+                    {
+                        <MudButton Variant="Variant.Outlined"
+                                  Color="Color.Secondary"
+                                  StartIcon="@Icons.Material.Filled.Send"
+                                  OnClick="TestDiscordWebhook"
+                                  Disabled="@_isTestingDiscord">
+                            @if (_isTestingDiscord)
+                            {
+                                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="me-2" />
+                                <span>Testing...</span>
+                            }
+                            else
+                            {
+                                <span>Send Test Notification</span>
+                            }
+                        </MudButton>
+                    }
+                </MudStack>
+            </MudPaper>
+
             @* Storage Information *@
             <MudPaper Elevation="2" Class="pa-4">
                 <MudText Typo="Typo.h6" Class="mb-3">Storage Usage</MudText>
@@ -168,6 +243,12 @@
     private int? _selectedMainMapId;
     private bool _isSavingMainMap = false;
 
+    // Discord integration fields
+    private bool _discordEnabled = false;
+    private string? _discordWebhookUrl = string.Empty;
+    private bool _isSavingDiscord = false;
+    private bool _isTestingDiscord = false;
+
     protected override async Task OnInitializedAsync()
     {
         await Task.WhenAll(LoadSettings(), LoadMaps());
@@ -208,6 +289,13 @@
             if (response.IsSuccessStatusCode)
             {
                 _tenantSettings = await response.Content.ReadFromJsonAsync<TenantDto>();
+
+                // Load Discord settings
+                if (_tenantSettings != null)
+                {
+                    _discordEnabled = _tenantSettings.DiscordNotificationsEnabled;
+                    _discordWebhookUrl = _tenantSettings.DiscordWebhookUrl;
+                }
             }
             else
             {
@@ -342,6 +430,104 @@
         finally
         {
             _isSavingMainMap = false;
+        }
+    }
+
+    private async Task SaveDiscordSettings()
+    {
+        if (_tenantSettings == null) return;
+
+        _isSavingDiscord = true;
+        try
+        {
+            var tenantId = TenantContext.CurrentTenant?.Id ?? _tenantSettings.Id;
+            var httpClient = HttpClientFactory.CreateClient("API");
+            var payload = new
+            {
+                Enabled = _discordEnabled,
+                WebhookUrl = _discordWebhookUrl
+            };
+            var response = await httpClient.PutAsJsonAsync($"/api/tenants/{tenantId}/discord-settings", payload);
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Discord settings saved successfully!", Severity.Success);
+                await LoadSettings();
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                Logger.LogWarning("Failed to save Discord settings: {StatusCode} - {Error}", response.StatusCode, errorContent);
+
+                // Try to extract error message from response
+                try
+                {
+                    var errorJson = System.Text.Json.JsonDocument.Parse(errorContent);
+                    if (errorJson.RootElement.TryGetProperty("error", out var errorProp))
+                    {
+                        Snackbar.Add($"Failed to save Discord settings: {errorProp.GetString()}", Severity.Error);
+                        return;
+                    }
+                }
+                catch { }
+
+                Snackbar.Add("Failed to save Discord settings.", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving Discord settings");
+            Snackbar.Add("Failed to save Discord settings.", Severity.Error);
+        }
+        finally
+        {
+            _isSavingDiscord = false;
+        }
+    }
+
+    private async Task TestDiscordWebhook()
+    {
+        if (_tenantSettings == null) return;
+
+        _isTestingDiscord = true;
+        try
+        {
+            var tenantId = TenantContext.CurrentTenant?.Id ?? _tenantSettings.Id;
+            var httpClient = HttpClientFactory.CreateClient("API");
+            var response = await httpClient.PostAsync($"/api/tenants/{tenantId}/discord-test", null);
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Test notification sent! Check your Discord channel.", Severity.Success);
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                Logger.LogWarning("Failed to test Discord webhook: {StatusCode} - {Error}", response.StatusCode, errorContent);
+
+                // Try to extract error message from response
+                try
+                {
+                    var errorJson = System.Text.Json.JsonDocument.Parse(errorContent);
+                    if (errorJson.RootElement.TryGetProperty("error", out var errorProp))
+                    {
+                        Snackbar.Add($"Test failed: {errorProp.GetString()}", Severity.Error);
+                        return;
+                    }
+                }
+                catch { }
+
+                Snackbar.Add("Failed to send test notification.", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error testing Discord webhook");
+            Snackbar.Add("Failed to send test notification.", Severity.Error);
+        }
+        finally
+        {
+            _isTestingDiscord = false;
         }
     }
 

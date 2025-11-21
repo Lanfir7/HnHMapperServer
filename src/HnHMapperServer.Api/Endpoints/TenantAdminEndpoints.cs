@@ -58,6 +58,12 @@ public static class TenantAdminEndpoints
 
         // DELETE /api/tenants/{tenantId}/tokens/{token} - Revoke a token
         group.MapDelete("/tokens/{token}", RevokeToken);
+
+        // PUT /api/tenants/{tenantId}/discord-settings - Update Discord webhook settings
+        group.MapPut("/discord-settings", UpdateDiscordSettings);
+
+        // POST /api/tenants/{tenantId}/discord-test - Test Discord webhook
+        group.MapPost("/discord-test", TestDiscordWebhook);
     }
 
     /// <summary>
@@ -543,7 +549,9 @@ public static class TenantAdminEndpoints
             CurrentStorageMB = tenant.CurrentStorageMB,
             CreatedAt = tenant.CreatedAt,
             IsActive = tenant.IsActive,
-            UserCount = userCount
+            UserCount = userCount,
+            DiscordWebhookUrl = tenant.DiscordWebhookUrl,
+            DiscordNotificationsEnabled = tenant.DiscordNotificationsEnabled
         };
 
         return Results.Ok(tenantDto);
@@ -831,6 +839,115 @@ public static class TenantAdminEndpoints
 
         logger.LogInformation("Tenant {TenantId} main map set to: {MapId}", tenantId, dto.MapId?.ToString() ?? "none");
         return Results.Ok(new { message = "Main map updated successfully", mainMapId = dto.MapId });
+    }
+
+    /// <summary>
+    /// PUT /api/tenants/{tenantId}/discord-settings
+    /// Updates Discord webhook settings for the tenant.
+    /// </summary>
+    private static async Task<IResult> UpdateDiscordSettings(
+        string tenantId,
+        UpdateDiscordSettingsDto dto,
+        ApplicationDbContext db,
+        HttpContext context,
+        IAuditService auditService,
+        ILogger<Program> logger)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var currentTenantId = context.User.FindFirst("TenantId")?.Value;
+            if (currentTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        // Validate webhook URL format if provided
+        if (!string.IsNullOrWhiteSpace(dto.WebhookUrl))
+        {
+            if (!dto.WebhookUrl.StartsWith("https://discord.com/api/webhooks/", StringComparison.OrdinalIgnoreCase) &&
+                !dto.WebhookUrl.StartsWith("https://discordapp.com/api/webhooks/", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.BadRequest(new { error = "Invalid Discord webhook URL. Must start with https://discord.com/api/webhooks/ or https://discordapp.com/api/webhooks/" });
+            }
+        }
+
+        // Find tenant
+        var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId);
+        if (tenant == null)
+        {
+            return Results.NotFound(new { error = "Tenant not found" });
+        }
+
+        var oldEnabled = tenant.DiscordNotificationsEnabled;
+        var oldWebhookUrl = tenant.DiscordWebhookUrl;
+
+        // Update settings
+        tenant.DiscordNotificationsEnabled = dto.Enabled;
+        tenant.DiscordWebhookUrl = dto.WebhookUrl;
+
+        await db.SaveChangesAsync();
+
+        // Audit log
+        await auditService.LogAsync(new AuditEntry
+        {
+            TenantId = tenantId,
+            Action = "DiscordSettingsUpdated",
+            EntityType = "TenantSettings",
+            EntityId = tenantId,
+            OldValue = $"Enabled: {oldEnabled}, WebhookUrl: {(string.IsNullOrEmpty(oldWebhookUrl) ? "none" : "***")}",
+            NewValue = $"Enabled: {dto.Enabled}, WebhookUrl: {(string.IsNullOrEmpty(dto.WebhookUrl) ? "none" : "***")}"
+        });
+
+        logger.LogInformation("Discord settings updated for tenant {TenantId}: Enabled={Enabled}", tenantId, dto.Enabled);
+
+        return Results.Ok(new { message = "Discord settings updated successfully" });
+    }
+
+    /// <summary>
+    /// POST /api/tenants/{tenantId}/discord-test
+    /// Sends a test notification to the Discord webhook.
+    /// </summary>
+    private static async Task<IResult> TestDiscordWebhook(
+        string tenantId,
+        ApplicationDbContext db,
+        IDiscordWebhookService discordService,
+        HttpContext context)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var currentTenantId = context.User.FindFirst("TenantId")?.Value;
+            if (currentTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        // Find tenant
+        var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId);
+        if (tenant == null)
+        {
+            return Results.NotFound(new { error = "Tenant not found" });
+        }
+
+        if (string.IsNullOrWhiteSpace(tenant.DiscordWebhookUrl))
+        {
+            return Results.BadRequest(new { error = "Discord webhook URL is not configured" });
+        }
+
+        // Test the webhook
+        var success = await discordService.TestWebhookAsync(tenant.DiscordWebhookUrl);
+
+        if (success)
+        {
+            return Results.Ok(new { message = "Test notification sent successfully! Check your Discord channel." });
+        }
+        else
+        {
+            return Results.BadRequest(new { error = "Failed to send test notification. Please check your webhook URL and try again." });
+        }
     }
 
     /// <summary>

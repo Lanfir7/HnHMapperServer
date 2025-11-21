@@ -124,7 +124,9 @@ public class TenantService : ITenantService
             StorageQuotaMB = entity.StorageQuotaMB,
             CurrentStorageMB = entity.CurrentStorageMB,
             CreatedAt = entity.CreatedAt,
-            IsActive = entity.IsActive
+            IsActive = entity.IsActive,
+            DiscordWebhookUrl = entity.DiscordWebhookUrl,
+            DiscordNotificationsEnabled = entity.DiscordNotificationsEnabled
         };
     }
 }

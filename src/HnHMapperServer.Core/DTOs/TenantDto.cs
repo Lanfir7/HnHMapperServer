@@ -13,6 +13,8 @@ public class TenantDto
     public bool IsActive { get; set; }
     public int UserCount { get; set; }
     public double StorageUsagePercent => StorageQuotaMB > 0 ? (CurrentStorageMB / StorageQuotaMB) * 100 : 0;
+    public string? DiscordWebhookUrl { get; set; }
+    public bool DiscordNotificationsEnabled { get; set; }
 }
 
 /// <summary>
@@ -31,4 +33,20 @@ public class UpdateTenantDto
     public string? Name { get; set; }
     public int? StorageQuotaMB { get; set; }
     public bool? IsActive { get; set; }
+}
+
+/// <summary>
+/// DTO for updating Discord notification settings
+/// </summary>
+public class UpdateDiscordSettingsDto
+{
+    /// <summary>
+    /// Whether Discord notifications are enabled
+    /// </summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>
+    /// Discord webhook URL (must start with https://discord.com/api/webhooks/)
+    /// </summary>
+    public string? WebhookUrl { get; set; }
 }

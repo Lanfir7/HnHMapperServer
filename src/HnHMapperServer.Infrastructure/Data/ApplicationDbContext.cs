@@ -59,6 +59,7 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
     // Notification and timer tables
     public DbSet<NotificationEntity> Notifications => Set<NotificationEntity>();
     public DbSet<TimerEntity> Timers => Set<TimerEntity>();
+    public DbSet<TimerWarningEntity> TimerWarnings => Set<TimerWarningEntity>();
     public DbSet<NotificationPreferenceEntity> NotificationPreferences => Set<NotificationPreferenceEntity>();
     public DbSet<TimerHistoryEntity> TimerHistory => Set<TimerHistoryEntity>();
 
@@ -507,6 +508,26 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
                 .HasForeignKey(e => e.CustomMarkerId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .IsRequired(false);
+        });
+
+        modelBuilder.Entity<TimerWarningEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.TimerId).IsRequired();
+            entity.Property(e => e.WarningMinutes).IsRequired();
+            entity.Property(e => e.SentAt).IsRequired();
+
+            // Unique index to prevent duplicate warnings for same timer+interval
+            entity.HasIndex(e => new { e.TimerId, e.WarningMinutes }).IsUnique();
+
+            // Index for efficient queries
+            entity.HasIndex(e => e.TimerId);
+
+            // Foreign key to TimerEntity (cascade delete when timer is deleted)
+            entity.HasOne<TimerEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.TimerId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<NotificationPreferenceEntity>(entity =>
@@ -1055,4 +1076,31 @@ public sealed class TimerHistoryEntity
     /// Timer title (copied from TimerEntity)
     /// </summary>
     public string Title { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Tracks which pre-expiry warnings have been sent for a timer
+/// Supports multiple warnings at different intervals (1 day, 4 hours, 1 hour, 10 minutes)
+/// </summary>
+public sealed class TimerWarningEntity
+{
+    /// <summary>
+    /// Primary key
+    /// </summary>
+    public int Id { get; set; }
+
+    /// <summary>
+    /// Foreign key to TimerEntity
+    /// </summary>
+    public int TimerId { get; set; }
+
+    /// <summary>
+    /// Warning interval in minutes (e.g., 1440 for 1 day, 60 for 1 hour)
+    /// </summary>
+    public int WarningMinutes { get; set; }
+
+    /// <summary>
+    /// UTC timestamp when the warning was sent
+    /// </summary>
+    public DateTime SentAt { get; set; }
 }

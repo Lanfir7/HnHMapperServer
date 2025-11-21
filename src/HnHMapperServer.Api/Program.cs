@@ -116,6 +116,22 @@ builder.Services.AddScoped<ITenantFilePathService, TenantFilePathService>();
 builder.Services.AddScoped<IAuditService, AuditService>();  // Phase 6: Audit logging service
 builder.Services.AddScoped<INotificationService, NotificationService>();  // Notification system
 builder.Services.AddScoped<ITimerService, TimerService>();  // Timer system
+builder.Services.AddScoped<ITimerWarningService, TimerWarningService>();  // Timer warning tracking
+
+// Register memory cache for preview URL signing service
+builder.Services.AddMemoryCache();
+
+// Register HttpClient factory for Discord webhook service
+builder.Services.AddHttpClient();
+
+// Register Discord webhook service
+builder.Services.AddScoped<IDiscordWebhookService, DiscordWebhookService>();
+
+// Register map preview service for Discord notifications
+builder.Services.AddScoped<IMapPreviewService, MapPreviewService>();
+
+// Register preview URL signing service for secure preview access (depends on IMemoryCache)
+builder.Services.AddScoped<IPreviewUrlSigningService, PreviewUrlSigningService>();
 
 // Register TileCacheService (singleton to cache tiles in memory and prevent blocking SSE connections)
 builder.Services.AddSingleton<TileCacheService>();
@@ -148,6 +164,7 @@ builder.Services.AddHostedService<TenantStorageVerificationService>(); // Phase 
 builder.Services.AddHostedService<PingCleanupService>(); // Ping cleanup service
 builder.Services.AddHostedService<ZoomTileRebuildService>(); // Zoom tile rebuild service
 builder.Services.AddHostedService<TimerCheckService>(); // Timer monitoring and notification service
+builder.Services.AddHostedService<PreviewCleanupService>(); // Map preview cleanup service (7 day retention)
 
 // Configure shared data protection for cookie sharing with Web
 var dataProtectionPath = Path.Combine(
@@ -304,6 +321,22 @@ builder.Services.AddRateLimiter(options =>
                 ReplenishmentPeriod = TimeSpan.FromHours(1),
                 TokensPerPeriod = 5,
                 AutoReplenishment = true
+            });
+    });
+
+    // Preview image access (prevent bulk harvesting): 60 per minute per IP
+    options.AddPolicy("PreviewAccess", httpContext =>
+    {
+        var ipAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: ipAddress,
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 60,                // 60 requests per minute
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 5
             });
     });
 

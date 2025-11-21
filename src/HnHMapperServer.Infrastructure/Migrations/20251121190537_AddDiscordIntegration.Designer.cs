@@ -3,6 +3,7 @@ using System;
 using HnHMapperServer.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HnHMapperServer.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251121190537_AddDiscordIntegration")]
+    partial class AddDiscordIntegration
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.10");
@@ -764,31 +767,6 @@ namespace HnHMapperServer.Infrastructure.Migrations
                     b.ToTable("TimerHistory");
                 });
 
-            modelBuilder.Entity("HnHMapperServer.Infrastructure.Data.TimerWarningEntity", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime>("SentAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("TimerId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("WarningMinutes")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TimerId");
-
-                    b.HasIndex("TimerId", "WarningMinutes")
-                        .IsUnique();
-
-                    b.ToTable("TimerWarnings");
-                });
-
             modelBuilder.Entity("HnHMapperServer.Infrastructure.Data.TokenEntity", b =>
                 {
                     b.Property<string>("Id")
@@ -1203,15 +1181,6 @@ namespace HnHMapperServer.Infrastructure.Migrations
                     b.HasOne("HnHMapperServer.Core.Models.TenantEntity", null)
                         .WithMany()
                         .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("HnHMapperServer.Infrastructure.Data.TimerWarningEntity", b =>
-                {
-                    b.HasOne("HnHMapperServer.Infrastructure.Data.TimerEntity", null)
-                        .WithMany()
-                        .HasForeignKey("TimerId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

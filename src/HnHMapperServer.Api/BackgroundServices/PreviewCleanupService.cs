@@ -1,0 +1,77 @@
+using HnHMapperServer.Services.Interfaces;
+
+namespace HnHMapperServer.Api.BackgroundServices;
+
+/// <summary>
+/// Background service that cleans up old map preview images.
+/// Deletes preview images older than 7 days.
+/// Runs every 6 hours.
+/// </summary>
+public class PreviewCleanupService : BackgroundService
+{
+    private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<PreviewCleanupService> _logger;
+    private readonly TimeSpan _interval = TimeSpan.FromHours(6);
+
+    public PreviewCleanupService(
+        IServiceProvider serviceProvider,
+        ILogger<PreviewCleanupService> logger)
+    {
+        _serviceProvider = serviceProvider;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("Preview Cleanup Service started (runs every 6 hours)");
+
+        // Run immediately on startup, then every 6 hours
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await CleanupOldPreviewsAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during preview cleanup");
+            }
+
+            try
+            {
+                await Task.Delay(_interval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Service is stopping
+                break;
+            }
+        }
+
+        _logger.LogInformation("Preview Cleanup Service stopped");
+    }
+
+    private async Task CleanupOldPreviewsAsync()
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var mapPreviewService = scope.ServiceProvider.GetRequiredService<IMapPreviewService>();
+
+        try
+        {
+            var deletedCount = await mapPreviewService.CleanupOldPreviewsAsync();
+
+            if (deletedCount > 0)
+            {
+                _logger.LogInformation("Preview cleanup completed: deleted {Count} old preview images", deletedCount);
+            }
+            else
+            {
+                _logger.LogDebug("Preview cleanup completed: no old previews to delete");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error cleaning up old preview images");
+        }
+    }
+}

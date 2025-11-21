@@ -3,6 +3,7 @@ using HnHMapperServer.Core.Enums;
 using HnHMapperServer.Core.Models;
 using HnHMapperServer.Services.Interfaces;
 using HnHMapperServer.Services.Services;
+using HnHMapperServer.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using System.Text;
@@ -44,6 +45,14 @@ public static class MapEndpoints
                 .SetVaryByQuery("v", "cache")      // Vary by revision and cache-bust params
                 .SetVaryByRouteValue("path")       // Vary by tile path (mapId/zoom/x_y)
                 .Tag("tiles"));                     // Tag for bulk invalidation if needed
+
+        // Public endpoint for Discord webhook preview images (HMAC-signed URLs, rate limited)
+        app.MapGet("/map/preview/{previewId}", ServePreviewImage)
+            .AllowAnonymous()
+            .RequireRateLimiting("PreviewAccess")
+            .CacheOutput(policy => policy
+                .Expire(TimeSpan.FromHours(48))    // Cache for 48 hours (signed URL expiration)
+                .SetVaryByRouteValue("previewId")); // Vary by preview ID
     }
 
     private static bool HasPermission(ClaimsPrincipal user, Permission permission)
@@ -948,6 +957,182 @@ public static class MapEndpoints
         context.Response.Headers.Append("Last-Modified", lastModified.ToString("R"));
         
         return Results.File(filePath, "image/png");
+    }
+
+    /// <summary>
+    /// Serve map preview images for Discord webhook notifications.
+    /// Public endpoint - no authentication required (Discord webhooks can't send auth headers).
+    /// Preview ID format: {timestamp}_{mapId}_{coordX}_{coordY}.png
+    /// Tenant isolation: Preview filename doesn't contain tenant ID, but validation is done via directory structure.
+    /// </summary>
+    private static async Task<IResult> ServePreviewImage(
+        HttpContext context,
+        [FromRoute] string previewId,
+        IMapPreviewService previewService,
+        ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger("MapPreviewEndpoint");
+
+        // Validate preview ID format (prevent directory traversal attacks)
+        if (string.IsNullOrWhiteSpace(previewId) ||
+            previewId.Contains("..") ||
+            previewId.Contains("/") ||
+            previewId.Contains("\\") ||
+            !previewId.EndsWith(".png"))
+        {
+            logger.LogWarning("Invalid preview ID requested: {PreviewId}", previewId);
+            return Results.NotFound();
+        }
+
+        // Extract signature parameters from query string (HMAC-based security)
+        var expires = context.Request.Query["expires"].ToString();
+        var signature = context.Request.Query["sig"].ToString();
+
+        if (string.IsNullOrWhiteSpace(expires) || string.IsNullOrWhiteSpace(signature))
+        {
+            logger.LogWarning("Preview request missing required signature parameters: {PreviewId}", previewId);
+            return Results.Unauthorized();
+        }
+
+        var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
+        var gridStorage = configuration["GridStorage"];
+        if (string.IsNullOrWhiteSpace(gridStorage))
+        {
+            gridStorage = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "map"));
+        }
+        else if (!Path.IsPathRooted(gridStorage))
+        {
+            gridStorage = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", gridStorage));
+        }
+
+        var previewsDir = Path.Combine(gridStorage, "previews");
+
+        if (!Directory.Exists(previewsDir))
+        {
+            logger.LogDebug("Previews directory does not exist");
+            return Results.NotFound();
+        }
+
+        // Search for preview file in all tenant directories
+        string? foundPreviewPath = null;
+        try
+        {
+            var tenantDirs = Directory.GetDirectories(previewsDir);
+            foreach (var tenantDir in tenantDirs)
+            {
+                var candidatePath = Path.Combine(tenantDir, previewId);
+                if (File.Exists(candidatePath))
+                {
+                    foundPreviewPath = candidatePath;
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error searching for preview {PreviewId}", previewId);
+            return Results.Problem("Internal server error");
+        }
+
+        if (foundPreviewPath == null)
+        {
+            logger.LogDebug("Preview not found: {PreviewId}", previewId);
+            return Results.NotFound();
+        }
+
+        // Extract tenant ID from path for signature validation
+        string tenantId;
+        try
+        {
+            var tenantDir = Path.GetFileName(Path.GetDirectoryName(foundPreviewPath));
+            if (string.IsNullOrWhiteSpace(tenantDir))
+            {
+                logger.LogWarning("Could not extract tenant ID from preview path: {Path}", foundPreviewPath);
+                return Results.Unauthorized();
+            }
+            tenantId = tenantDir;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error extracting tenant ID from preview path: {Path}", foundPreviewPath);
+            return Results.Unauthorized();
+        }
+
+        // Look up tenant's Discord webhook URL and validate signature
+        var db = context.RequestServices.GetRequiredService<ApplicationDbContext>();
+        var signingService = context.RequestServices.GetRequiredService<IPreviewUrlSigningService>();
+
+        string? webhookUrl = null;
+        try
+        {
+            var tenant = await db.Tenants
+                .Where(t => t.Id == tenantId)
+                .Select(t => new { t.DiscordWebhookUrl })
+                .FirstOrDefaultAsync();
+
+            if (tenant == null)
+            {
+                logger.LogWarning("Tenant not found for preview: {TenantId}", tenantId);
+                return Results.Unauthorized();
+            }
+
+            webhookUrl = tenant.DiscordWebhookUrl;
+
+            if (string.IsNullOrWhiteSpace(webhookUrl))
+            {
+                logger.LogWarning("No Discord webhook configured for tenant {TenantId}, cannot validate signature", tenantId);
+                return Results.Unauthorized();
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error looking up tenant webhook for signature validation");
+            return Results.Unauthorized();
+        }
+
+        // Validate HMAC signature
+        var isValidSignature = signingService.ValidateSignedUrl(previewId, expires, signature, webhookUrl);
+        if (!isValidSignature)
+        {
+            logger.LogWarning("Invalid signature for preview {PreviewId}, tenant {TenantId}", previewId, tenantId);
+            return Results.Unauthorized();
+        }
+
+        // Signature validated - serve with caching headers
+        var fileInfo = new FileInfo(foundPreviewPath);
+        var lastModified = fileInfo.LastWriteTimeUtc;
+        var etagValue = $"\"{lastModified.Ticks}\"";
+
+        // Check If-None-Match (ETag)
+        var ifNoneMatch = context.Request.Headers["If-None-Match"].ToString();
+        if (!string.IsNullOrEmpty(ifNoneMatch) && ifNoneMatch == etagValue)
+        {
+            context.Response.StatusCode = StatusCodes.Status304NotModified;
+            context.Response.Headers.Append("ETag", etagValue);
+            context.Response.Headers.Append("Cache-Control", "public, max-age=172800"); // 48 hours
+            return Results.Empty;
+        }
+
+        // Check If-Modified-Since
+        var ifModifiedSince = context.Request.Headers["If-Modified-Since"].ToString();
+        if (!string.IsNullOrEmpty(ifModifiedSince) &&
+            DateTime.TryParse(ifModifiedSince, out var ifModifiedSinceDate) &&
+            lastModified <= ifModifiedSinceDate.ToUniversalTime())
+        {
+            context.Response.StatusCode = StatusCodes.Status304NotModified;
+            context.Response.Headers.Append("Last-Modified", lastModified.ToString("R"));
+            context.Response.Headers.Append("Cache-Control", "public, max-age=172800"); // 48 hours
+            return Results.Empty;
+        }
+
+        // Set caching headers for successful response (48 hours = 172800 seconds)
+        context.Response.Headers.Append("Cache-Control", "public, max-age=172800");
+        context.Response.Headers.Append("ETag", etagValue);
+        context.Response.Headers.Append("Last-Modified", lastModified.ToString("R"));
+
+        logger.LogDebug("Serving preview {PreviewId} ({Size}KB)", previewId, fileInfo.Length / 1024);
+
+        return Results.File(foundPreviewPath, "image/png");
     }
 
     // Request DTOs for admin endpoints

@@ -34,4 +34,14 @@ public sealed class TenantEntity
     /// Whether the tenant is active (1) or suspended (0)
     /// </summary>
     public bool IsActive { get; set; } = true;
+
+    /// <summary>
+    /// Discord webhook URL for sending notifications (nullable)
+    /// </summary>
+    public string? DiscordWebhookUrl { get; set; }
+
+    /// <summary>
+    /// Whether Discord notifications are enabled for this tenant
+    /// </summary>
+    public bool DiscordNotificationsEnabled { get; set; } = false;
 }
