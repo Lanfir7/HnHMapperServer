@@ -5,6 +5,8 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using HnHMapperServer.Core.Models;
+using HnHMapperServer.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace HnHMapperServer.Services.Services;
 
@@ -14,7 +16,7 @@ namespace HnHMapperServer.Services.Services;
 /// </summary>
 public class MapPreviewService : IMapPreviewService
 {
-    private readonly ITileService _tileService;
+    private readonly ApplicationDbContext _db;
     private readonly IPreviewUrlSigningService _signingService;
     private readonly ILogger<MapPreviewService> _logger;
     private readonly string _gridStorage;
@@ -24,12 +26,12 @@ public class MapPreviewService : IMapPreviewService
     private static readonly TimeSpan PREVIEW_URL_VALIDITY = TimeSpan.FromHours(48); // Discord caching window
 
     public MapPreviewService(
-        ITileService tileService,
+        ApplicationDbContext db,
         IPreviewUrlSigningService signingService,
         ILogger<MapPreviewService> logger,
         IConfiguration configuration)
     {
-        _tileService = tileService;
+        _db = db;
         _signingService = signingService;
         _logger = logger;
 
@@ -84,12 +86,21 @@ public class MapPreviewService : IMapPreviewService
 
                     try
                     {
-                        // Get tile at zoom level 0 (base tiles)
-                        var tileData = await _tileService.GetTileAsync(mapId, coord, 0);
+                        // Query tile directly from database with explicit tenant filtering
+                        // IMPORTANT: IgnoreQueryFilters() bypasses global tenant filter (no HttpContext in background task)
+                        var tile = await _db.Tiles
+                            .IgnoreQueryFilters()
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(t =>
+                                t.MapId == mapId &&
+                                t.CoordX == tileCoordX &&
+                                t.CoordY == tileCoordY &&
+                                t.Zoom == 0 &&
+                                t.TenantId == tenantId);
 
-                        if (tileData != null && !string.IsNullOrEmpty(tileData.File))
+                        if (tile != null && !string.IsNullOrEmpty(tile.File))
                         {
-                            var tilePath = Path.Combine(_gridStorage, tileData.File);
+                            var tilePath = Path.Combine(_gridStorage, tile.File);
 
                             if (File.Exists(tilePath))
                             {
