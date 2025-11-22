@@ -8,7 +8,7 @@ public interface IMapPreviewService
 {
     /// <summary>
     /// Generate a map preview image showing tiles around a marker location.
-    /// Creates a 4x4 grid of tiles (400x400px) with a red pin at the marker's exact position.
+    /// Creates a 4x4 grid of tiles (400x400px) with the marker icon at the exact position.
     /// Returns a signed URL with 48-hour expiration.
     /// </summary>
     /// <param name="mapId">Map ID containing the marker</param>
@@ -18,6 +18,7 @@ public interface IMapPreviewService
     /// <param name="markerY">Relative Y position within grid (0-100)</param>
     /// <param name="tenantId">Tenant ID for isolation</param>
     /// <param name="webhookUrl">Discord webhook URL (used for signature generation)</param>
+    /// <param name="iconPath">Optional icon path (e.g., "gfx/terobjs/mm/geyser.png") to render on preview</param>
     /// <returns>Signed preview URL path with query parameters</returns>
     Task<string> GenerateMarkerPreviewAsync(
         int mapId,
@@ -26,7 +27,8 @@ public interface IMapPreviewService
         int markerX,
         int markerY,
         string tenantId,
-        string webhookUrl);
+        string webhookUrl,
+        string? iconPath = null);
 
     /// <summary>
     /// Get the file path for a preview image.

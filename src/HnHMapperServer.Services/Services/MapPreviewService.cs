@@ -60,7 +60,8 @@ public class MapPreviewService : IMapPreviewService
         int markerX,
         int markerY,
         string tenantId,
-        string webhookUrl)
+        string webhookUrl,
+        string? iconPath = null)
     {
         try
         {
@@ -141,8 +142,17 @@ public class MapPreviewService : IMapPreviewService
             var pinX = gridIndexX * TILE_SIZE + markerX;
             var pinY = gridIndexY * TILE_SIZE + markerY;
 
-            // Draw red pin indicator at marker location
-            DrawMarkerPin(preview, pinX, pinY);
+            // Draw marker indicator at marker location
+            if (!string.IsNullOrEmpty(iconPath))
+            {
+                // Draw actual marker icon if provided
+                DrawMarkerIcon(preview, pinX, pinY, iconPath);
+            }
+            else
+            {
+                // Fall back to red crosshair pin
+                DrawMarkerPin(preview, pinX, pinY);
+            }
 
             // Save preview to tenant-isolated directory
             var previewDir = Path.Combine(_gridStorage, "previews", tenantId);
@@ -251,6 +261,82 @@ public class MapPreviewService : IMapPreviewService
                 {
                     // Only draw if not already red (outline only)
                     if (Math.Abs(t) > thickness || Math.Abs(dx) > markerSize)
+                    {
+                        image[px, py] = new Rgba32(255, 255, 255, 255); // White
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Draw the actual marker icon at the specified position.
+    /// Loads the icon image file and composites it over the preview.
+    /// </summary>
+    private void DrawMarkerIcon(Image<Rgba32> image, int x, int y, string iconPath)
+    {
+        try
+        {
+            // Ensure icon path has .png extension
+            var fullIconPath = iconPath.EndsWith(".png") ? iconPath : $"{iconPath}.png";
+
+            // Construct full path to icon file in grid storage
+            var iconFilePath = Path.Combine(_gridStorage, fullIconPath);
+
+            if (!File.Exists(iconFilePath))
+            {
+                _logger.LogWarning("Marker icon not found: {IconPath}, falling back to crosshair", iconFilePath);
+                DrawMarkerPin(image, x, y);
+                return;
+            }
+
+            // Load the icon image
+            using var iconImg = Image.Load<Rgba32>(iconFilePath);
+
+            // Resize icon to 32x32 for better visibility on the preview
+            const int ICON_SIZE = 32;
+            iconImg.Mutate(ctx => ctx.Resize(ICON_SIZE, ICON_SIZE));
+
+            // Center the icon at the marker position
+            var iconX = x - (ICON_SIZE / 2);
+            var iconY = y - (ICON_SIZE / 2);
+
+            // Clamp to image bounds
+            iconX = Math.Clamp(iconX, 0, image.Width - ICON_SIZE);
+            iconY = Math.Clamp(iconY, 0, image.Height - ICON_SIZE);
+
+            // Draw white background circle for better visibility
+            DrawIconBackground(image, iconX + (ICON_SIZE / 2), iconY + (ICON_SIZE / 2), ICON_SIZE / 2 + 2);
+
+            // Composite icon onto preview
+            image.Mutate(ctx => ctx.DrawImage(iconImg, new Point(iconX, iconY), 1f));
+
+            _logger.LogDebug("Drew marker icon {IconPath} at ({X},{Y})", iconPath, x, y);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load marker icon {IconPath}, falling back to crosshair", iconPath);
+            DrawMarkerPin(image, x, y);
+        }
+    }
+
+    /// <summary>
+    /// Draw a white circular background behind the icon for better visibility.
+    /// </summary>
+    private void DrawIconBackground(Image<Rgba32> image, int centerX, int centerY, int radius)
+    {
+        // Draw a filled white circle using simple pixel iteration
+        for (int dy = -radius; dy <= radius; dy++)
+        {
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                // Check if point is within circle
+                if (dx * dx + dy * dy <= radius * radius)
+                {
+                    var px = centerX + dx;
+                    var py = centerY + dy;
+
+                    if (px >= 0 && px < image.Width && py >= 0 && py < image.Height)
                     {
                         image[px, py] = new Rgba32(255, 255, 255, 255); // White
                     }

@@ -31,6 +31,24 @@ public class DiscordEmbedDto
 
     [JsonPropertyName("timestamp")]
     public string? Timestamp { get; set; }
+
+    [JsonPropertyName("fields")]
+    public List<DiscordEmbedField>? Fields { get; set; }
+}
+
+/// <summary>
+/// Discord embed field (labeled section within the embed).
+/// </summary>
+public class DiscordEmbedField
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("value")]
+    public string Value { get; set; } = string.Empty;
+
+    [JsonPropertyName("inline")]
+    public bool Inline { get; set; } = false;
 }
 
 /// <summary>

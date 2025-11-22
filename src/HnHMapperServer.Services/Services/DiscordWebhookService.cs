@@ -79,6 +79,9 @@ public class DiscordWebhookService : IDiscordWebhookService
             if (embedData.Footer != null)
                 embed["footer"] = new { text = embedData.Footer.Text };
 
+            if (embedData.Fields != null && embedData.Fields.Count > 0)
+                embed["fields"] = embedData.Fields.Select(f => new { name = f.Name, value = f.Value, inline = f.Inline }).ToArray();
+
             var payload = new
             {
                 embeds = new[] { embed }
@@ -365,7 +368,8 @@ public class DiscordWebhookService : IDiscordWebhookService
                                 customMarker.X,
                                 customMarker.Y,
                                 notification.TenantId,
-                                webhookUrl);
+                                webhookUrl,
+                                customMarker.Icon);  // Pass icon path for rendering
 
                             previewUrl = $"{baseUrl}{signedUrl}";
 
@@ -400,7 +404,8 @@ public class DiscordWebhookService : IDiscordWebhookService
                                     marker.PositionX,
                                     marker.PositionY,
                                     notification.TenantId,
-                                    webhookUrl);
+                                    webhookUrl,
+                                    marker.Image);  // Pass icon path for rendering
 
                                 previewUrl = $"{baseUrl}{signedUrl}";
 
@@ -440,7 +445,18 @@ public class DiscordWebhookService : IDiscordWebhookService
             Thumbnail = shouldIncludeUrls && !string.IsNullOrEmpty(iconUrl) ? new DiscordEmbedThumbnail { Url = iconUrl } : null,
             Image = shouldIncludeUrls && !string.IsNullOrEmpty(previewUrl) ? new DiscordEmbedImage { Url = previewUrl } : null,
             Footer = new DiscordEmbedFooter { Text = "HavenMap Notification" },
-            Timestamp = notification.CreatedAt.ToString("O")  // ISO 8601 format
+            Timestamp = notification.CreatedAt.ToString("O"),  // ISO 8601 format
+            Fields = shouldIncludeUrls && !string.IsNullOrEmpty(mapUrl)
+                ? new List<DiscordEmbedField>
+                {
+                    new DiscordEmbedField
+                    {
+                        Name = "🗺️ View on Map",
+                        Value = mapUrl,
+                        Inline = false
+                    }
+                }
+                : null
         };
 
         return embed;
