@@ -128,19 +128,55 @@
         {
             <MudPaper Class="pa-4" Elevation="0" Outlined="true">
                 <MudStack Spacing="2">
-                    <MudText Typo="Typo.subtitle2">
-                        <MudIcon Icon="@Icons.Material.Filled.CloudSync" Class="me-2" Style="vertical-align: middle;" />
-                        @(importProgress ?? "Starting import...")
-                    </MudText>
-                    @if (currentProgressPercent > 0)
+                    @* Overall progress bar *@
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.subtitle2">
+                            <MudIcon Icon="@Icons.Material.Filled.CloudSync" Class="me-2" Style="vertical-align: middle;" />
+                            Overall Progress
+                        </MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">
+                            @if (elapsedSeconds > 0)
+                            {
+                                var elapsed = TimeSpan.FromSeconds(elapsedSeconds);
+                                @($"{elapsed:mm\\:ss} elapsed")
+                            }
+                        </MudText>
+                    </MudStack>
+                    @if (overallProgressPercent > 0)
                     {
-                        <MudProgressLinear Value="@currentProgressPercent" Color="Color.Primary" Size="Size.Large" Rounded="true">
-                            <MudText Typo="Typo.body2">@currentProgressPercent%</MudText>
+                        <MudProgressLinear Value="@overallProgressPercent" Color="Color.Success" Size="Size.Large" Rounded="true">
+                            <MudText Typo="Typo.body2">@($"{overallProgressPercent:F0}%")</MudText>
                         </MudProgressLinear>
                     }
                     else
                     {
-                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                        <MudProgressLinear Indeterminate="true" Color="Color.Success" />
+                    }
+
+                    @* Current phase info *@
+                    <MudDivider Class="my-1" />
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.body2">
+                            @if (phaseNumber > 0 && totalPhases > 0)
+                            {
+                                @($"Phase {phaseNumber}/{totalPhases}: ")
+                            }
+                            @(importProgress ?? "Starting import...")
+                        </MudText>
+                        @if (itemsPerSecond > 0)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                                @($"{itemsPerSecond:F1}/sec")
+                            </MudChip>
+                        }
+                    </MudStack>
+                    @if (currentProgressPercent > 0)
+                    {
+                        <MudProgressLinear Value="@currentProgressPercent" Color="Color.Primary" Size="Size.Medium" Rounded="true" />
+                    }
+                    else
+                    {
+                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Size="Size.Medium" />
                     }
                 </MudStack>
             </MudPaper>
@@ -247,6 +283,11 @@
     private bool isImporting;
     private string? importProgress;
     private int currentProgressPercent;
+    private double overallProgressPercent;
+    private double elapsedSeconds;
+    private double itemsPerSecond;
+    private int phaseNumber;
+    private int totalPhases;
     private ImportResultDto? importResult;
     private bool isCheckingStatus;
     private bool isOtherImportRunning;
@@ -466,8 +507,10 @@
             }
 
             // Read SSE stream for progress updates
+            // Use minimal buffer size (1) to avoid StreamReader buffering delays
+            // Default buffer is 4KB which causes SSE events to batch until buffer fills
             using var stream = await response.Content.ReadAsStreamAsync();
-            using var reader = new StreamReader(stream);
+            using var reader = new StreamReader(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1);
 
             string? eventType = null;
             string eventData = "";
@@ -525,10 +568,20 @@
                 var progress = System.Text.Json.JsonSerializer.Deserialize<ProgressEventDto>(eventData);
                 if (progress != null)
                 {
+                    // Update phase-level progress
                     currentProgressPercent = progress.Total > 0
                         ? (int)Math.Round((double)progress.Current * 100 / progress.Total)
                         : 0;
-                    importProgress = $"{progress.Phase}: {progress.Current}/{progress.Total}";
+
+                    // Update overall progress and stats
+                    overallProgressPercent = progress.OverallPercent;
+                    elapsedSeconds = progress.ElapsedSeconds;
+                    itemsPerSecond = progress.ItemsPerSecond;
+                    phaseNumber = progress.PhaseNumber;
+                    totalPhases = progress.TotalPhases;
+
+                    // Build progress message
+                    importProgress = $"{progress.Phase}: {progress.Current:N0}/{progress.Total:N0}";
                     if (!string.IsNullOrEmpty(progress.ItemName))
                     {
                         importProgress += $" - {progress.ItemName}";
@@ -578,6 +631,12 @@
         isImporting = false;
         importProgress = null;
         selectedFile = null;
+        currentProgressPercent = 0;
+        overallProgressPercent = 0;
+        elapsedSeconds = 0;
+        itemsPerSecond = 0;
+        phaseNumber = 0;
+        totalPhases = 0;
 
         // Check status to get cooldown timer
         await CheckImportStatus();
@@ -614,6 +673,16 @@
         public int Total { get; set; }
         [System.Text.Json.Serialization.JsonPropertyName("itemName")]
         public string ItemName { get; set; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("phaseNumber")]
+        public int PhaseNumber { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("totalPhases")]
+        public int TotalPhases { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("overallPercent")]
+        public double OverallPercent { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("elapsedSeconds")]
+        public double ElapsedSeconds { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("itemsPerSecond")]
+        public double ItemsPerSecond { get; set; }
     }
 
     /// <summary>

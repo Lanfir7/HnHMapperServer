@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Threading.Channels;
 using HnHMapperServer.Core.Interfaces;
 using HnHMapperServer.Core.Models;
 using HnHMapperServer.Services.Interfaces;
@@ -7,6 +8,113 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace HnHMapperServer.Services.Services;
+
+/// <summary>
+/// Represents a rendered grid ready for I/O operations.
+/// Used to pass data from producer (rendering) to consumer (saving).
+/// </summary>
+internal sealed record RenderedGrid(
+    HmapGridData SourceGrid,
+    GridData GridData,
+    Image<Rgba32> TileImage,
+    string RelativePath,
+    string FullPath);
+
+/// <summary>
+/// Helper class to track import progress with timing and overall percentage
+/// </summary>
+internal class ImportProgressTracker
+{
+    private readonly IProgress<HmapImportProgress>? _progress;
+    private readonly Stopwatch _stopwatch;
+    private readonly Stopwatch _phaseStopwatch;
+    private DateTime _lastReportTime = DateTime.MinValue;
+    private int _lastReportedItem = 0;
+
+    // Phase weights for overall progress calculation (must sum to 100)
+    private const int PHASE_PARSE = 2;           // Phase 1: Parsing
+    private const int PHASE_FETCH_TILES = 18;    // Phase 2: Fetching tiles
+    private const int PHASE_IMPORT_GRIDS = 60;   // Phase 3: Importing grids (longest)
+    private const int PHASE_ZOOM_LEVELS = 15;    // Phase 4: Generating zoom
+    private const int PHASE_MARKERS = 5;         // Phase 5: Importing markers
+
+    public int CurrentPhase { get; private set; }
+    public const int TotalPhases = 5;
+
+    private double _completedPhaseWeight = 0;
+    private double _currentPhaseWeight = 0;
+
+    public ImportProgressTracker(IProgress<HmapImportProgress>? progress)
+    {
+        _progress = progress;
+        _stopwatch = Stopwatch.StartNew();
+        _phaseStopwatch = new Stopwatch();
+    }
+
+    public void StartPhase(int phaseNumber, string phaseName)
+    {
+        CurrentPhase = phaseNumber;
+        _phaseStopwatch.Restart();
+        _lastReportedItem = 0;
+
+        _currentPhaseWeight = phaseNumber switch
+        {
+            1 => PHASE_PARSE,
+            2 => PHASE_FETCH_TILES,
+            3 => PHASE_IMPORT_GRIDS,
+            4 => PHASE_ZOOM_LEVELS,
+            5 => PHASE_MARKERS,
+            _ => 0
+        };
+    }
+
+    public void CompletePhase()
+    {
+        _completedPhaseWeight += _currentPhaseWeight;
+    }
+
+    public void Report(string phase, int current, int total, string? itemName = null, bool forceReport = false)
+    {
+        // Throttle reports to max once every 100ms unless forced or significant progress
+        var now = DateTime.UtcNow;
+        var timeSinceLastReport = (now - _lastReportTime).TotalMilliseconds;
+        var itemsSinceLastReport = current - _lastReportedItem;
+
+        // Report if: forced, first item, last item, 100ms passed, or 1% progress made
+        var percentProgress = total > 0 ? (double)itemsSinceLastReport / total * 100 : 0;
+        if (!forceReport && current != 1 && current != total && timeSinceLastReport < 100 && percentProgress < 1)
+        {
+            return;
+        }
+
+        _lastReportTime = now;
+        _lastReportedItem = current;
+
+        // Calculate phase progress (0-1)
+        var phaseProgress = total > 0 ? (double)current / total : 0;
+
+        // Calculate overall progress
+        var overallPercent = _completedPhaseWeight + (_currentPhaseWeight * phaseProgress);
+
+        // Calculate speed
+        var elapsedSeconds = _stopwatch.Elapsed.TotalSeconds;
+        var phaseElapsedSeconds = _phaseStopwatch.Elapsed.TotalSeconds;
+        var itemsPerSecond = phaseElapsedSeconds > 0.5 ? current / phaseElapsedSeconds : 0;
+
+        _progress?.Report(new HmapImportProgress
+        {
+            Phase = phase,
+            CurrentItem = current,
+            TotalItems = total,
+            CurrentItemName = itemName ?? "",
+            PhaseNumber = CurrentPhase,
+            TotalPhases = TotalPhases,
+            OverallPercent = Math.Min(overallPercent, 100),
+            ElapsedSeconds = elapsedSeconds,
+            ItemsPerSecond = Math.Round(itemsPerSecond, 1)
+        });
+    }
+}
 
 /// <summary>
 /// Service for importing .hmap files into the map database
@@ -53,20 +161,24 @@ public class HmapImportService : IHmapImportService
     {
         var stopwatch = Stopwatch.StartNew();
         var result = new HmapImportResult();
+        var tracker = new ImportProgressTracker(progress);
 
         try
         {
             // Phase 1: Parse .hmap file
             cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report(new HmapImportProgress { Phase = "Parsing", CurrentItem = 0, TotalItems = 1 });
+            tracker.StartPhase(1, "Parsing");
+            tracker.Report("Parsing .hmap file", 0, 1, "Reading file...", forceReport: true);
 
             var reader = new HmapReader();
             var hmapData = reader.Read(hmapStream);
+            tracker.Report("Parsing .hmap file", 1, 1, $"Found {hmapData.Grids.Count} grids", forceReport: true);
+            tracker.CompletePhase();
 
             _logger.LogInformation("Parsed .hmap: {GridCount} grids, {SegmentCount} segments",
                 hmapData.Grids.Count, hmapData.GetSegmentIds().Count());
 
-            // Phase 2: Filter to only the 3 largest segments by grid count
+            // Filter to only the 3 largest segments by grid count
             cancellationToken.ThrowIfCancellationRequested();
             var allSegments = hmapData.GetSegmentIds()
                 .Select(id => new { Id = id, GridCount = hmapData.GetGridsForSegment(id).Count })
@@ -94,36 +206,26 @@ public class HmapImportService : IHmapImportService
             _logger.LogInformation("Will import {GridCount} grids from {SegmentCount} segments",
                 gridsToImport.Count, segments.Count);
 
-            // Phase 3: Collect tile resources only for grids we're importing
+            // Phase 2: Fetch tile resources from Haven server
             cancellationToken.ThrowIfCancellationRequested();
             var allResources = gridsToImport
                 .SelectMany(g => g.Tilesets.Select(t => t.ResourceName))
                 .Distinct()
                 .ToList();
 
-            progress?.Report(new HmapImportProgress
-            {
-                Phase = "Fetching tiles",
-                CurrentItem = 0,
-                TotalItems = allResources.Count
-            });
+            tracker.StartPhase(2, "Fetching tiles");
+            tracker.Report("Fetching tile resources", 0, allResources.Count, "Connecting to Haven...", forceReport: true);
 
-            // Phase 4: Fetch tile resources from Haven server
             var tileCacheDir = Path.Combine(gridStorage, "hmap-tile-cache");
             using var tileResourceService = new TileResourceService(tileCacheDir);
 
             var fetchProgress = new Progress<(int current, int total, string name)>(p =>
             {
-                progress?.Report(new HmapImportProgress
-                {
-                    Phase = "Fetching tiles",
-                    CurrentItem = p.current,
-                    TotalItems = p.total,
-                    CurrentItemName = p.name
-                });
+                tracker.Report("Fetching tile resources", p.current, p.total, p.name);
             });
 
             await tileResourceService.PrefetchTilesAsync(allResources, fetchProgress);
+            tracker.CompletePhase();
 
             // Check for network errors during tile fetching
             var networkError = tileResourceService.GetFirstNetworkError();
@@ -132,25 +234,21 @@ public class HmapImportService : IHmapImportService
                 _logger.LogWarning("Tile fetch warning: {NetworkError}", networkError);
             }
 
-            // Phase 5: Process each segment
-            var segmentIndex = 0;
+            // Phase 3: Import grids from each segment
+            tracker.StartPhase(3, "Importing grids");
+            var totalGridsToProcess = gridsToImport.Count;
+            var processedGridsSoFar = 0;
 
             foreach (var segmentId in segments)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                segmentIndex++;
                 var segmentGrids = hmapData.GetGridsForSegment(segmentId);
 
-                progress?.Report(new HmapImportProgress
-                {
-                    Phase = "Importing segments",
-                    CurrentItem = segmentIndex,
-                    TotalItems = segments.Count,
-                    CurrentItemName = $"Segment {segmentId:X} ({segmentGrids.Count} grids)"
-                });
+                var (mapId, isNewMap, gridsImported, gridsSkipped, createdGridIds, gridsProcessed) = await ImportSegmentAsync(
+                    segmentId, segmentGrids, tenantId, mode, gridStorage, tileResourceService,
+                    tracker, processedGridsSoFar, totalGridsToProcess, cancellationToken);
 
-                var (mapId, isNewMap, gridsImported, gridsSkipped, createdGridIds) = await ImportSegmentAsync(
-                    segmentId, segmentGrids, tenantId, mode, gridStorage, tileResourceService, cancellationToken);
+                processedGridsSoFar += gridsProcessed;
 
                 if (mapId > 0)
                 {
@@ -169,43 +267,28 @@ public class HmapImportService : IHmapImportService
                 result.TilesRendered += gridsImported;
             }
 
-            // Phase 6: Generate zoom levels for affected maps
-            cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report(new HmapImportProgress
-            {
-                Phase = "Generating zoom levels",
-                CurrentItem = 0,
-                TotalItems = result.AffectedMapIds.Count
-            });
+            tracker.CompletePhase();
 
+            // Phase 4: Generate zoom levels for affected maps
+            tracker.StartPhase(4, "Generating zoom levels");
+            var distinctMaps = result.AffectedMapIds.Distinct().ToList();
             var zoomIndex = 0;
-            foreach (var mapId in result.AffectedMapIds.Distinct())
+            foreach (var mapId in distinctMaps)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 zoomIndex++;
-                progress?.Report(new HmapImportProgress
-                {
-                    Phase = "Generating zoom levels",
-                    CurrentItem = zoomIndex,
-                    TotalItems = result.AffectedMapIds.Count,
-                    CurrentItemName = $"Map {mapId}"
-                });
-
+                tracker.Report("Generating zoom levels", zoomIndex, distinctMaps.Count, $"Map {mapId}");
                 await GenerateZoomLevelsForMapAsync(mapId, tenantId, gridStorage);
             }
+            tracker.CompletePhase();
 
-            // Phase 7: Import markers
+            // Phase 5: Import markers
             if (hmapData.Markers.Count > 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                progress?.Report(new HmapImportProgress
-                {
-                    Phase = "Importing markers",
-                    CurrentItem = 0,
-                    TotalItems = hmapData.Markers.Count
-                });
-
+                tracker.StartPhase(5, "Importing markers");
                 var markerIndex = 0;
+                var totalMarkers = hmapData.Markers.Count;
+
                 foreach (var segmentId in segments)
                 {
                     var segmentMarkers = hmapData.GetMarkersForSegment(segmentId);
@@ -222,13 +305,7 @@ public class HmapImportService : IHmapImportService
                     {
                         cancellationToken.ThrowIfCancellationRequested();
                         markerIndex++;
-                        progress?.Report(new HmapImportProgress
-                        {
-                            Phase = "Importing markers",
-                            CurrentItem = markerIndex,
-                            TotalItems = hmapData.Markers.Count,
-                            CurrentItemName = marker.Name
-                        });
+                        tracker.Report("Importing markers", markerIndex, totalMarkers, marker.Name);
 
                         // Convert marker's absolute tile coords to grid coords
                         // Marker TileX/TileY are absolute tile coordinates in world
@@ -274,6 +351,7 @@ public class HmapImportService : IHmapImportService
 
                 _logger.LogInformation("Markers: {Imported} imported, {Skipped} skipped",
                     result.MarkersImported, result.MarkersSkipped);
+                tracker.CompletePhase();
             }
 
             result.Success = true;
@@ -391,13 +469,16 @@ public class HmapImportService : IHmapImportService
         _logger.LogInformation("Cleanup completed for tenant {TenantId}", tenantId);
     }
 
-    private async Task<(int mapId, bool isNewMap, int gridsImported, int gridsSkipped, List<string> createdGridIds)> ImportSegmentAsync(
+    private async Task<(int mapId, bool isNewMap, int gridsImported, int gridsSkipped, List<string> createdGridIds, int gridsProcessed)> ImportSegmentAsync(
         long segmentId,
         List<HmapGridData> grids,
         string tenantId,
         HmapImportMode mode,
         string gridStorage,
         TileResourceService tileResourceService,
+        ImportProgressTracker tracker,
+        int processedSoFar,
+        int totalGridsOverall,
         CancellationToken cancellationToken)
     {
         int mapId = 0;
@@ -405,35 +486,32 @@ public class HmapImportService : IHmapImportService
         int gridsImported = 0;
         int gridsSkipped = 0;
         var createdGridIds = new List<string>();
+        var segmentGridCount = grids.Count;
+
+        // ===== STEP 1: Determine map and filter grids to import =====
+        List<HmapGridData> gridsToImport;
 
         if (mode == HmapImportMode.CreateNew)
         {
-            // Always create new map
+            // Always create new map and import all grids
             mapId = await CreateNewMapAsync(tenantId);
             isNewMap = true;
+            gridsToImport = grids;
             _logger.LogInformation("Created new map {MapId} for segment {SegmentId:X}", mapId, segmentId);
-
-            // Import all grids
-            foreach (var grid in grids)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await ImportGridAsync(grid, mapId, tenantId, gridStorage, tileResourceService);
-                createdGridIds.Add(grid.GridIdString);
-                gridsImported++;
-            }
         }
         else // Merge mode
         {
-            // Check if any grids already exist
+            // Batch check for existing grids (single query instead of N queries)
+            var allGridIds = grids.Select(g => g.GridIdString).ToList();
+            var existingGridIds = await _gridRepository.GetExistingGridIdsAsync(allGridIds);
+
+            // Find existing map from any existing grid
             int? existingMapId = null;
-            foreach (var grid in grids)
+            if (existingGridIds.Count > 0)
             {
-                var existing = await _gridRepository.GetGridAsync(grid.GridIdString);
-                if (existing != null)
-                {
-                    existingMapId = existing.Map;
-                    break;
-                }
+                var firstExistingId = existingGridIds.First();
+                var existingGrid = await _gridRepository.GetGridAsync(firstExistingId);
+                existingMapId = existingGrid?.Map;
             }
 
             if (existingMapId.HasValue)
@@ -449,24 +527,225 @@ public class HmapImportService : IHmapImportService
                 _logger.LogInformation("Created new map {MapId} for segment {SegmentId:X} (no existing grids)", mapId, segmentId);
             }
 
-            // Import grids that don't exist
-            foreach (var grid in grids)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var existing = await _gridRepository.GetGridAsync(grid.GridIdString);
-                if (existing != null)
-                {
-                    gridsSkipped++;
-                    continue;
-                }
+            // Filter to only new grids
+            gridsToImport = grids.Where(g => !existingGridIds.Contains(g.GridIdString)).ToList();
+            gridsSkipped = grids.Count - gridsToImport.Count;
 
-                await ImportGridAsync(grid, mapId, tenantId, gridStorage, tileResourceService);
-                createdGridIds.Add(grid.GridIdString);
-                gridsImported++;
+            if (gridsSkipped > 0)
+            {
+                _logger.LogInformation("Skipping {SkippedCount} existing grids in segment {SegmentId:X}",
+                    gridsSkipped, segmentId);
             }
         }
 
-        return (mapId, isNewMap, gridsImported, gridsSkipped, createdGridIds);
+        if (gridsToImport.Count == 0)
+        {
+            // Report progress for skipped grids
+            tracker.Report("Importing grids", processedSoFar + segmentGridCount, totalGridsOverall,
+                $"Segment {segmentId:X} - all grids exist", forceReport: true);
+            return (mapId, isNewMap, 0, gridsSkipped, createdGridIds, segmentGridCount);
+        }
+
+        // ===== STEP 2: Producer-Consumer Pipeline =====
+        // Producer: Parallel CPU rendering
+        // Consumer: Sequential I/O and batched DB writes
+
+        const int RENDER_PARALLELISM = 4; // CPU-bound rendering parallelism
+        const int CHANNEL_CAPACITY = 20;  // Bounded buffer to limit memory
+        const int BATCH_SIZE = 500;       // DB batch size
+
+        var channel = Channel.CreateBounded<RenderedGrid>(new BoundedChannelOptions(CHANNEL_CAPACITY)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        var batchContext = new BatchImportContext(BATCH_SIZE);
+        var processedCount = 0;
+        var importedGridIds = new List<string>();
+        Exception? producerException = null;
+
+        // Producer task: Parallel rendering
+        var producerTask = Task.Run(async () =>
+        {
+            using var semaphore = new SemaphoreSlim(RENDER_PARALLELISM);
+            var renderTasks = new List<Task>();
+
+            try
+            {
+                foreach (var grid in gridsToImport)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await semaphore.WaitAsync(cancellationToken);
+
+                    var renderTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            // Create grid data
+                            var gridData = new GridData
+                            {
+                                Id = grid.GridIdString,
+                                Map = mapId,
+                                Coord = new Coord(grid.TileX, grid.TileY),
+                                NextUpdate = DateTime.UtcNow.AddMinutes(-1),
+                                TenantId = tenantId
+                            };
+
+                            // Compute paths
+                            var relativePath = Path.Combine("tenants", tenantId, mapId.ToString(), "0",
+                                $"{grid.TileX}_{grid.TileY}.png");
+                            var fullPath = Path.Combine(gridStorage, relativePath);
+
+                            // Render tile (CPU-bound)
+                            var tileImage = await RenderGridTileAsync(grid, tileResourceService);
+
+                            // Send to consumer
+                            await channel.Writer.WriteAsync(
+                                new RenderedGrid(grid, gridData, tileImage, relativePath, fullPath),
+                                cancellationToken);
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    }, cancellationToken);
+
+                    renderTasks.Add(renderTask);
+                }
+
+                await Task.WhenAll(renderTasks);
+            }
+            catch (Exception ex)
+            {
+                producerException = ex;
+                throw;
+            }
+            finally
+            {
+                channel.Writer.Complete();
+            }
+        }, cancellationToken);
+
+        // Consumer task: Sequential I/O and batched DB writes
+        var consumerTask = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var rendered in channel.Reader.ReadAllAsync(cancellationToken))
+                {
+                    try
+                    {
+                        // Ensure directory exists
+                        var directory = Path.GetDirectoryName(rendered.FullPath)!;
+                        if (!Directory.Exists(directory))
+                            Directory.CreateDirectory(directory);
+
+                        // Save tile to disk
+                        await rendered.TileImage.SaveAsPngAsync(rendered.FullPath, cancellationToken);
+                        var fileSize = (int)new FileInfo(rendered.FullPath).Length;
+
+                        // Create tile data
+                        var tileData = new TileData
+                        {
+                            MapId = mapId,
+                            Coord = rendered.GridData.Coord,
+                            Zoom = 0,
+                            File = rendered.RelativePath,
+                            Cache = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                            TenantId = tenantId,
+                            FileSizeBytes = fileSize
+                        };
+
+                        // Add to batch
+                        batchContext.AddGrid(rendered.GridData);
+                        batchContext.AddTile(tileData);
+                        batchContext.AddStorage(fileSize / (1024.0 * 1024.0));
+                        importedGridIds.Add(rendered.GridData.Id);
+
+                        // Report progress
+                        processedCount++;
+                        var overallProcessed = processedSoFar + gridsSkipped + processedCount;
+                        tracker.Report(
+                            "Importing grids",
+                            overallProcessed,
+                            totalGridsOverall,
+                            $"Grid {rendered.SourceGrid.TileX},{rendered.SourceGrid.TileY}"
+                        );
+
+                        // Flush batch if needed
+                        if (batchContext.ShouldFlush())
+                        {
+                            await FlushBatchAsync(batchContext);
+                        }
+                    }
+                    finally
+                    {
+                        rendered.TileImage.Dispose();
+                    }
+                }
+
+                // Flush remaining items
+                if (batchContext.HasPendingItems)
+                {
+                    await FlushBatchAsync(batchContext);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Drain remaining items to dispose images
+                while (channel.Reader.TryRead(out var item))
+                {
+                    item.TileImage.Dispose();
+                }
+                throw;
+            }
+        }, cancellationToken);
+
+        // Wait for both tasks
+        try
+        {
+            await Task.WhenAll(producerTask, consumerTask);
+        }
+        catch (Exception) when (producerException != null)
+        {
+            // Log the producer exception if it was the root cause
+            _logger.LogError(producerException, "Producer task failed during import");
+            throw;
+        }
+
+        gridsImported = processedCount;
+        createdGridIds.AddRange(importedGridIds);
+
+        // Clear memory cache periodically to prevent memory buildup
+        tileResourceService.ClearMemoryCache();
+
+        return (mapId, isNewMap, gridsImported, gridsSkipped, createdGridIds, segmentGridCount);
+    }
+
+    private async Task FlushBatchAsync(BatchImportContext batch)
+    {
+        var (grids, tiles, storageMB) = batch.ExtractBatch();
+
+        if (grids.Count > 0)
+        {
+            await _gridRepository.SaveGridsBatchAsync(grids);
+        }
+
+        if (tiles.Count > 0)
+        {
+            await _tileRepository.SaveTilesBatchAsync(tiles);
+        }
+
+        if (storageMB > 0 && grids.Count > 0)
+        {
+            // Use the first grid's TenantId for quota update
+            await _quotaService.IncrementStorageUsageAsync(grids[0].TenantId, storageMB);
+        }
+
+        _logger.LogDebug("Flushed batch: {GridCount} grids, {TileCount} tiles, {StorageMB:F2} MB",
+            grids.Count, tiles.Count, storageMB);
     }
 
     private async Task<int> CreateNewMapAsync(string tenantId)
@@ -487,54 +766,12 @@ public class HmapImportService : IHmapImportService
         return mapInfo.Id;
     }
 
-    private async Task ImportGridAsync(
-        HmapGridData grid,
-        int mapId,
-        string tenantId,
-        string gridStorage,
-        TileResourceService tileResourceService)
-    {
-        // Create grid data entry
-        var gridData = new GridData
-        {
-            Id = grid.GridIdString,
-            Map = mapId,
-            Coord = new Coord(grid.TileX, grid.TileY),
-            NextUpdate = DateTime.UtcNow.AddMinutes(-1), // Past so it's immediately requestable
-            TenantId = tenantId
-        };
-
-        await _gridRepository.SaveGridAsync(gridData);
-
-        // Render tile image
-        var tileImage = await RenderGridTileAsync(grid, tileResourceService);
-
-        // Save tile to disk
-        var relativePath = Path.Combine("tenants", tenantId, mapId.ToString(), "0", $"{grid.TileX}_{grid.TileY}.png");
-        var fullPath = Path.Combine(gridStorage, relativePath);
-
-        var directory = Path.GetDirectoryName(fullPath)!;
-        if (!Directory.Exists(directory))
-            Directory.CreateDirectory(directory);
-
-        await tileImage.SaveAsPngAsync(fullPath);
-        var fileSize = (int)new FileInfo(fullPath).Length;
-
-        // Save tile record
-        await _tileService.SaveTileAsync(mapId, gridData.Coord, 0, relativePath, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), tenantId, fileSize);
-
-        // Update storage quota
-        var sizeMB = fileSize / (1024.0 * 1024.0);
-        await _quotaService.IncrementStorageUsageAsync(tenantId, sizeMB);
-
-        tileImage.Dispose();
-    }
-
     private async Task<Image<Rgba32>> RenderGridTileAsync(HmapGridData grid, TileResourceService tileResourceService)
     {
         var result = new Image<Rgba32>(GRID_SIZE, GRID_SIZE);
 
         // Load tile textures for this grid
+        // GetTileImageAsync returns clones that we own and must dispose
         var tileTex = new Image<Rgba32>?[grid.Tilesets.Count];
         for (int i = 0; i < grid.Tilesets.Count; i++)
         {
@@ -642,6 +879,12 @@ public class HmapImportService : IHmapImportService
             }
         }
 
+        // Dispose tile textures (they are clones we own)
+        foreach (var img in tileTex)
+        {
+            img?.Dispose();
+        }
+
         return result;
     }
 
@@ -681,9 +924,17 @@ public class HmapImportService : IHmapImportService
         }
 
         // Process zoom levels in order (1 depends on 0, 2 depends on 1, etc.)
+        // Sequential processing required because:
+        // 1. DbContext is not thread-safe
+        // 2. SQLite has limited concurrent write support
         for (int zoom = 1; zoom <= 6; zoom++)
         {
-            var zoomCoords = coordsToProcess.Where(c => c.zoom == zoom).Select(c => c.coord).Distinct();
+            var zoomCoords = coordsToProcess
+                .Where(c => c.zoom == zoom)
+                .Select(c => c.coord)
+                .Distinct()
+                .ToList();
+
             foreach (var coord in zoomCoords)
             {
                 try

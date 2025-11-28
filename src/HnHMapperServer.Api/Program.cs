@@ -76,7 +76,11 @@ else if (!Path.IsPathRooted(gridStorage))
     // Resolve relative GridStorage consistently to solution-level path
     gridStorage = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, "..", gridStorage));
 }
-var connectionString = $"Data Source={Path.Combine(gridStorage, "grids.db")};Mode=ReadWriteCreate;Cache=Shared;Pooling=True";
+// SQLite connection with WAL mode for better concurrency during imports
+// - Cache=Shared: Shared cache for better connection reuse
+// - Pooling=True: Connection pooling for performance
+var dbPath = Path.Combine(gridStorage, "grids.db");
+var connectionString = $"Data Source={dbPath};Mode=ReadWriteCreate;Cache=Shared;Pooling=True";
 
 builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
 {
@@ -88,13 +92,16 @@ builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
     }
     options.UseSqlite(connectionString, sqliteOptions =>
     {
-        sqliteOptions.CommandTimeout(30); // 30 second timeout
+        sqliteOptions.CommandTimeout(60); // 60 second timeout for long import operations
     });
 
     // Disable EF Core command logging completely
     options.ConfigureWarnings(warnings =>
         warnings.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.CommandExecuted));
 });
+
+// Enable WAL mode and set busy timeout on startup for better concurrency
+builder.Services.AddHostedService<HnHMapperServer.Api.BackgroundServices.SqliteWalInitializerService>();
 
 // Register repositories (non-auth repositories only)
 builder.Services.AddScoped<IGridRepository, GridRepository>();

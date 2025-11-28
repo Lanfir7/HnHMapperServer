@@ -64,6 +64,7 @@ public class TileService : ITileService
 
         int loadedSubTiles = 0;
 
+        // Sequential sub-tile loading (DbContext is not thread-safe)
         for (int x = 0; x <= 1; x++)
         {
             for (int y = 0; y <= 1; y++)

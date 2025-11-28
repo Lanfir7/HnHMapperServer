@@ -104,4 +104,11 @@ public class HmapImportProgress
     public int CurrentItem { get; set; }
     public int TotalItems { get; set; }
     public string CurrentItemName { get; set; } = "";
+
+    // Enhanced progress info for better UX
+    public int PhaseNumber { get; set; }
+    public int TotalPhases { get; set; }
+    public double OverallPercent { get; set; }
+    public double ElapsedSeconds { get; set; }
+    public double ItemsPerSecond { get; set; }
 }

@@ -36,10 +36,12 @@ public static class Extensions
             http.AddServiceDiscovery();
         });
 
-        // Prefer HTTPS endpoints for service discovery resolution
+        // Allow both HTTP and HTTPS for service discovery resolution
+        // In production Docker Compose, internal traffic uses HTTP (api:8080)
+        // In development with Aspire, HTTPS is used (https://api)
         builder.Services.Configure<ServiceDiscoveryOptions>(options =>
         {
-            options.AllowedSchemes = ["https"];
+            options.AllowedSchemes = ["https", "http"];
         });
 
         return builder;

@@ -4,20 +4,23 @@ using SixLabors.ImageSharp.PixelFormats;
 namespace HnHMapperServer.Services.Services;
 
 /// <summary>
-/// Service for fetching and caching tile textures from Haven &amp; Hearth server
+/// Service for fetching and caching tile textures from Haven &amp; Hearth server.
+/// Uses a bounded LRU cache to limit memory usage during large imports.
 /// </summary>
 public class TileResourceService : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly string _cacheDir;
-    private readonly Dictionary<string, Image<Rgba32>> _imageCache = new();
+    private readonly LruImageCache _imageCache;
     private const string BASE_URL = "https://www.havenandhearth.com/mt/r/";
+    private const int DEFAULT_CACHE_SIZE = 50; // ~2MB max for 50 tile textures
 
-    public TileResourceService(string cacheDir)
+    public TileResourceService(string cacheDir, int memoryCacheSize = DEFAULT_CACHE_SIZE)
     {
         _cacheDir = cacheDir;
         _httpClient = new HttpClient();
         _httpClient.Timeout = TimeSpan.FromSeconds(30);
+        _imageCache = new LruImageCache(memoryCacheSize);
 
         if (!Directory.Exists(_cacheDir))
         {
@@ -43,13 +46,29 @@ public class TileResourceService : IDisposable
     }
 
     /// <summary>
-    /// Fetch a tile texture from server or cache
+    /// Fetch a tile texture from server or cache.
+    /// Returns a CLONE that the caller owns and must dispose.
+    /// This ensures thread-safety when multiple tasks access the same tile.
     /// </summary>
     public async Task<Image<Rgba32>?> GetTileImageAsync(string resourceName)
     {
-        // Check in-memory cache first
-        if (_imageCache.TryGetValue(resourceName, out var cached))
-            return cached;
+        // Check in-memory LRU cache first
+        // Lock during clone to prevent disposal race condition
+        lock (_imageCache)
+        {
+            var cached = _imageCache.Get(resourceName);
+            if (cached != null)
+            {
+                try
+                {
+                    return cached.Clone();
+                }
+                catch
+                {
+                    // Image was disposed, will reload below
+                }
+            }
+        }
 
         var cachePath = GetCachePath(resourceName);
 
@@ -59,8 +78,11 @@ public class TileResourceService : IDisposable
             try
             {
                 var img = await Image.LoadAsync<Rgba32>(cachePath);
-                _imageCache[resourceName] = img;
-                return img;
+                lock (_imageCache)
+                {
+                    _imageCache.Add(resourceName, img);
+                    return img.Clone();
+                }
             }
             catch
             {
@@ -89,11 +111,14 @@ public class TileResourceService : IDisposable
             // Cache to disk
             await File.WriteAllBytesAsync(cachePath, data);
 
-            // Load and cache in memory
+            // Load and cache in memory (LRU cache takes ownership)
             using var ms = new MemoryStream(data);
             var img = await Image.LoadAsync<Rgba32>(ms);
-            _imageCache[resourceName] = img;
-            return img;
+            lock (_imageCache)
+            {
+                _imageCache.Add(resourceName, img);
+                return img.Clone();
+            }
         }
         catch (HttpRequestException ex)
         {
@@ -177,26 +202,38 @@ public class TileResourceService : IDisposable
     /// <summary>
     /// Get cache statistics
     /// </summary>
-    public (int cachedCount, long totalSize) GetCacheStats()
+    public (int diskCachedCount, long diskTotalSize, int memoryCacheCount) GetCacheStats()
     {
-        if (!Directory.Exists(_cacheDir))
-            return (0, 0);
+        var diskCount = 0;
+        long diskSize = 0;
 
-        var files = Directory.GetFiles(_cacheDir, "*.png");
-        var totalSize = files.Sum(f => new FileInfo(f).Length);
-        return (files.Length, totalSize);
+        if (Directory.Exists(_cacheDir))
+        {
+            var files = Directory.GetFiles(_cacheDir, "*.png");
+            diskCount = files.Length;
+            diskSize = files.Sum(f => new FileInfo(f).Length);
+        }
+
+        return (diskCount, diskSize, _imageCache.Count);
     }
+
+    /// <summary>
+    /// Clears the in-memory image cache to free memory.
+    /// Disk cache is preserved. Call this between import batches.
+    /// </summary>
+    public void ClearMemoryCache()
+    {
+        _imageCache.Clear();
+    }
+
+    /// <summary>
+    /// Gets the current count of images in memory cache.
+    /// </summary>
+    public int MemoryCacheCount => _imageCache.Count;
 
     public void Dispose()
     {
-        if (_imageCache != null)
-        {
-            foreach (var img in _imageCache.Values)
-            {
-                img?.Dispose();
-            }
-            _imageCache.Clear();
-        }
+        _imageCache?.Dispose();
         _httpClient?.Dispose();
     }
 }
