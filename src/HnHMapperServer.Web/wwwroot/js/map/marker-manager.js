@@ -336,6 +336,11 @@ export function jumpToMarker(markerId, mapInstance) {
  * @returns {boolean} - Always true
  */
 export function setThingwallHighlightEnabled(enabled, mapInstance) {
+    if (!mapInstance) {
+        console.warn('[MarkerManager] Cannot toggle thingwall highlight - mapInstance is null');
+        return false;
+    }
+
     if (thingwallHighlightEnabled === enabled) {
         return true; // No change needed
     }

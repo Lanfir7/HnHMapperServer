@@ -2271,10 +2271,14 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
     private async Task ToggleThingwallHighlight()
     {
-        showThingwallHighlight = !showThingwallHighlight;
         leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
-        await leafletModule.InvokeVoidAsync("setThingwallHighlightEnabled", showThingwallHighlight);
-        await InvokeAsync(StateHasChanged);
+        var newState = !showThingwallHighlight;
+        var success = await leafletModule.InvokeAsync<bool>("setThingwallHighlightEnabled", newState);
+        if (success)
+        {
+            showThingwallHighlight = newState;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     [JSInvokable]

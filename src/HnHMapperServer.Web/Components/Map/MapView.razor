@@ -1,10 +1,12 @@
 @using Microsoft.JSInterop
 @using HnHMapperServer.Web.Models
 @using HnHMapperServer.Web.Services
+@using HnHMapperServer.Services.Interfaces
 @using Microsoft.Extensions.Logging
 @inject IJSRuntime JS
 @inject SafeJsInterop SafeJs
 @inject ILogger<MapView> Logger
+@inject IBuildInfoProvider BuildInfo
 @implements IAsyncDisposable
 
 <div @ref="mapElement" class="leaflet-map"></div>
@@ -27,6 +29,11 @@
     private DotNetObjectReference<MapView>? dotnetRef;
     private bool initialized = false;
     private bool disposed = false;
+
+    /// <summary>
+    /// Version suffix for cache busting dynamic JS imports
+    /// </summary>
+    private string JsVersion => $"?v={BuildInfo.Get("web").Commit}";
     
     /// <summary>
     /// Public property to check if the map view has been initialized
@@ -56,7 +63,7 @@
             // Load JavaScript module
             Logger.LogDebug("Loading leaflet-interop.js module...");
             jsModule = await JS.InvokeAsync<IJSObjectReference>(
-                "import", "./js/leaflet-interop.js");
+                "import", $"./js/leaflet-interop.js{JsVersion}");
             Logger.LogDebug("Leaflet module loaded successfully");
 
             // Create .NET reference for callbacks

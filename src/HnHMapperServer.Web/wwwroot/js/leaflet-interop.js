@@ -764,6 +764,10 @@ export function toggleMarkerTooltips(type, visible) {
 }
 
 export function setThingwallHighlightEnabled(enabled) {
+    if (!mapInstance) {
+        console.warn('[LeafletInterop] Cannot toggle thingwall highlight - map not initialized');
+        return false;
+    }
     return MarkerManager.setThingwallHighlightEnabled(enabled, mapInstance);
 }
 
