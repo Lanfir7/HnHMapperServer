@@ -254,6 +254,16 @@ function connectSse() {
             }
         });
 
+        // Overlay updated event
+        eventSource.addEventListener('overlayUpdated', function (event) {
+            try {
+                const overlay = JSON.parse(event.data);
+                invokeDotNetSafe('OnOverlayUpdated', overlay);
+            } catch (e) {
+                console.error('[SSE] Error parsing overlayUpdated event:', e);
+            }
+        });
+
         // Characters snapshot event (initial full state)
         eventSource.addEventListener('charactersSnapshot', function (event) {
             console.warn('[SSE] ===== charactersSnapshot event received =====');

@@ -22,6 +22,7 @@ public class UpdateNotificationService : IUpdateNotificationService
     private readonly ConcurrentBag<Channel<RoadEventDto>> _roadCreatedChannels = new();
     private readonly ConcurrentBag<Channel<RoadEventDto>> _roadUpdatedChannels = new();
     private readonly ConcurrentBag<Channel<RoadDeleteEventDto>> _roadDeletedChannels = new();
+    private readonly ConcurrentBag<Channel<OverlayEventDto>> _overlayUpdatedChannels = new();
     private readonly ConcurrentBag<Channel<NotificationEventDto>> _notificationCreatedChannels = new();
     private readonly ConcurrentBag<Channel<int>> _notificationReadChannels = new();
     private readonly ConcurrentBag<Channel<int>> _notificationDismissedChannels = new();
@@ -479,6 +480,37 @@ public class UpdateNotificationService : IUpdateNotificationService
         foreach (var channel in _roadDeletedChannels)
         {
             if (!channel.Writer.TryWrite(deleteEvent))
+            {
+                channelsToRemove.Add(channel);
+            }
+        }
+
+        foreach (var deadChannel in channelsToRemove)
+        {
+            deadChannel.Writer.TryComplete();
+        }
+    }
+
+    // Overlay events
+    public ChannelReader<OverlayEventDto> SubscribeToOverlayUpdated()
+    {
+        var channel = Channel.CreateUnbounded<OverlayEventDto>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        _overlayUpdatedChannels.Add(channel);
+        return channel.Reader;
+    }
+
+    public void NotifyOverlayUpdated(OverlayEventDto overlay)
+    {
+        var channelsToRemove = new ConcurrentBag<Channel<OverlayEventDto>>();
+
+        foreach (var channel in _overlayUpdatedChannels)
+        {
+            if (!channel.Writer.TryWrite(overlay))
             {
                 channelsToRemove.Add(channel);
             }

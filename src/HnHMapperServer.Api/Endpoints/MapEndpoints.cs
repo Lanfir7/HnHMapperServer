@@ -525,6 +525,7 @@ public static class MapEndpoints
         var roadCreated = updateNotificationService.SubscribeToRoadCreated();
         var roadUpdated = updateNotificationService.SubscribeToRoadUpdated();
         var roadDeleted = updateNotificationService.SubscribeToRoadDeleted();
+        var overlayUpdated = updateNotificationService.SubscribeToOverlayUpdated();
         var notificationCreated = updateNotificationService.SubscribeToNotificationCreated();
         var notificationRead = updateNotificationService.SubscribeToNotificationRead();
         var notificationDismissed = updateNotificationService.SubscribeToNotificationDismissed();
@@ -733,6 +734,18 @@ public static class MapEndpoints
                         var deleteDto = new { Id = roadDeleteEvent.Id };
                         var deleteJson = JsonSerializer.Serialize(deleteDto, jsonOptions);
                         await context.Response.WriteAsync($"event: roadDeleted\ndata: {deleteJson}\n\n");
+                        await context.Response.Body.FlushAsync();
+                    }
+                }
+
+                // Check for overlay update events
+                // SECURITY: Filter by tenant to prevent cross-tenant overlay visibility
+                while (overlayUpdated.TryRead(out var overlay))
+                {
+                    if (overlay.TenantId == tenantId)
+                    {
+                        var overlayJson = JsonSerializer.Serialize(overlay, jsonOptions);
+                        await context.Response.WriteAsync($"event: overlayUpdated\ndata: {overlayJson}\n\n");
                         await context.Response.Body.FlushAsync();
                     }
                 }

@@ -2384,6 +2384,22 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
     #endregion
 
+    #region Overlay SSE Event Handlers
+
+    [JSInvokable]
+    public async Task OnOverlayUpdated(OverlayEventDto overlayEvent)
+    {
+        // Invalidate the overlay cache at the specific coordinate and trigger refetch
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("invalidateOverlayAtCoord",
+            overlayEvent.MapId,
+            overlayEvent.CoordX,
+            overlayEvent.CoordY,
+            overlayEvent.OverlayType);
+    }
+
+    #endregion
+
     #region Road Handlers
 
     private async Task SelectRoad(RoadViewModel road)

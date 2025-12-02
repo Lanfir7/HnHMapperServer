@@ -938,6 +938,12 @@ export function setOverlayData(mapId, overlays) {
     return true;
 }
 
+// Invalidate overlay cache at a specific coordinate (called from SSE event)
+export function invalidateOverlayAtCoord(mapId, x, y, overlayType) {
+    OverlayLayer.invalidateOverlayAtCoord(mapId, x, y, overlayType);
+    return true;
+}
+
 // Road Management - Delegate to RoadManager
 export function addRoad(road) {
     return RoadManager.addRoad(road, mapInstance);

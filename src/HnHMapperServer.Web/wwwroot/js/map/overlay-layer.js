@@ -523,3 +523,35 @@ export function redrawOverlays() {
         overlayCanvasLayer.redraw();
     }
 }
+
+/**
+ * Invalidate cached overlay data at a specific coordinate and trigger refetch
+ * Called when receiving overlayUpdated SSE event
+ * @param {number} mapId - Map ID
+ * @param {number} x - Grid X coordinate
+ * @param {number} y - Grid Y coordinate
+ * @param {string} overlayType - The overlay type that was updated (optional, if null clears all types)
+ */
+export function invalidateOverlayAtCoord(mapId, x, y, overlayType) {
+    console.debug(`[Overlay] Invalidating overlay at map ${mapId}, coord (${x}, ${y}), type: ${overlayType || 'all'}`);
+
+    const mapCache = overlayCache[mapId];
+    if (mapCache) {
+        const coordKey = `${x}_${y}`;
+        if (mapCache[coordKey]) {
+            if (overlayType) {
+                // Clear specific overlay type
+                delete mapCache[coordKey][overlayType];
+            } else {
+                // Clear all overlay types at this coordinate
+                delete mapCache[coordKey];
+            }
+        }
+    }
+
+    // Only refetch if this is the current map and overlays are enabled
+    if (mapId === currentMapId && enabledOverlayTypes.size > 0) {
+        // Request fresh data for this coordinate
+        requestOverlays(mapId, [{ x, y }]);
+    }
+}

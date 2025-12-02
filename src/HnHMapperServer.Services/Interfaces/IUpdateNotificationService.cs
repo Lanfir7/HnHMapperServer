@@ -147,6 +147,16 @@ public interface IUpdateNotificationService
     void NotifyRoadDeleted(RoadDeleteEventDto deleteEvent);
 
     /// <summary>
+    /// Subscribes to overlay update notifications
+    /// </summary>
+    ChannelReader<OverlayEventDto> SubscribeToOverlayUpdated();
+
+    /// <summary>
+    /// Notifies all subscribers of an overlay update
+    /// </summary>
+    void NotifyOverlayUpdated(OverlayEventDto overlay);
+
+    /// <summary>
     /// Subscribes to notification creation events
     /// </summary>
     ChannelReader<NotificationEventDto> SubscribeToNotificationCreated();
