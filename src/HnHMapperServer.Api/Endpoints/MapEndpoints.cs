@@ -479,9 +479,10 @@ public static class MapEndpoints
 
         if (tenantRevisions.Count > 0)
         {
+            var initialJsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
             foreach (var kv in tenantRevisions)
             {
-                var irJson = JsonSerializer.Serialize(new { MapId = kv.Key, Revision = kv.Value });
+                var irJson = JsonSerializer.Serialize(new { MapId = kv.Key, Revision = kv.Value }, initialJsonOptions);
                 await context.Response.WriteAsync($"event: mapRevision\ndata: {irJson}\n\n");
             }
             await context.Response.Body.FlushAsync();

@@ -125,10 +125,15 @@ function connectSse() {
         });
 
         // Map revision event (cache busting)
+        // Note: Server sends camelCase JSON (mapId, revision)
         eventSource.addEventListener('mapRevision', function (event) {
             try {
                 const revision = JSON.parse(event.data);
-                invokeDotNetSafe('OnSseMapRevision', revision.MapId, revision.Revision);
+                if (revision && revision.mapId != null && revision.revision != null) {
+                    invokeDotNetSafe('OnSseMapRevision', revision.mapId, revision.revision);
+                } else {
+                    console.warn('[SSE] Ignoring mapRevision with null values:', revision);
+                }
             } catch (e) {
                 console.error('[SSE] Error parsing mapRevision event:', e);
             }
