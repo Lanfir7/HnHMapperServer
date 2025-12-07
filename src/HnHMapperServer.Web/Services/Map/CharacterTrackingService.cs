@@ -147,11 +147,11 @@ public class CharacterTrackingService
     }
 
     /// <summary>
-    /// Get all characters for a specific map
+    /// Get all characters for a specific map (returns snapshot to avoid collection modified exceptions)
     /// </summary>
-    public IEnumerable<CharacterModel> GetCharactersForMap(int mapId)
+    public IReadOnlyList<CharacterModel> GetCharactersForMap(int mapId)
     {
-        return _allCharacters.Where(c => c.Map == mapId);
+        return _allCharacters.Where(c => c.Map == mapId).ToList();
     }
 
     #endregion

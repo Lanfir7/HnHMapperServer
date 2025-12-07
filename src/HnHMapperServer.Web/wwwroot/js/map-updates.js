@@ -129,10 +129,14 @@ function connectSse() {
         eventSource.addEventListener('mapRevision', function (event) {
             try {
                 const revision = JSON.parse(event.data);
-                if (revision && revision.mapId != null && revision.revision != null) {
+                // Use Number.isFinite() to ensure values are valid finite numbers
+                // This catches null, undefined, NaN, Infinity which would fail .NET deserialization
+                if (revision &&
+                    typeof revision.mapId === 'number' && Number.isFinite(revision.mapId) &&
+                    typeof revision.revision === 'number' && Number.isFinite(revision.revision)) {
                     invokeDotNetSafe('OnSseMapRevision', revision.mapId, revision.revision);
                 } else {
-                    console.warn('[SSE] Ignoring mapRevision with null values:', revision);
+                    console.warn('[SSE] Ignoring mapRevision with invalid values:', revision);
                 }
             } catch (e) {
                 console.error('[SSE] Error parsing mapRevision event:', e);
