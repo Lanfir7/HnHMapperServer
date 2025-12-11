@@ -1,9 +1,9 @@
-name: Build & Publish Docker images
+name: Build & Publish Docker Images
 
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:  # можно запустить вручную
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -13,10 +13,10 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up .NET
+      - name: Set up .NET 9
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
@@ -31,15 +31,13 @@ jobs:
       - name: Build and push API image
         run: |
           docker build -t ghcr.io/lanfir7/hnhmapper-api:main -f Dockerfile.Api .
+          docker build -t ghcr.io/lanfir7/hnhmapper-api:latest -f Dockerfile.Api .
           docker push ghcr.io/lanfir7/hnhmapper-api:main
+          docker push ghcr.io/lanfir7/hnhmapper-api:latest
 
       - name: Build and push Web image
         run: |
           docker build -t ghcr.io/lanfir7/hnhmapper-web:main -f Dockerfile.Web .
+          docker build -t ghcr.io/lanfir7/hnhmapper-web:latest -f Dockerfile.Web .
           docker push ghcr.io/lanfir7/hnhmapper-web:main
-
-      # Если хочешь единый образ (как у Davis) — можно добавить:
-      # - name: Build and push unified image
-      #   run: |
-      #     docker build -t ghcr.io/lanfir7/hnhmapperserver:main -f Dockerfile .
-      #     docker push ghcr.io/lanfir7/hnhmapperserver:main
+          docker push ghcr.io/lanfir7/hnhmapper-web:latest
