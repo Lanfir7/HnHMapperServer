@@ -29,14 +29,14 @@ jobs:
 
       - name: Build & push API
         run: |
-          docker build -t ghcr.io/lanfir7/hnhmapper-api:main -f dockerfile.Api .
-          docker build -t ghcr.io/lanfir7/hnhmapper-api:latest -f dockerfile.Api .
+          docker build -t ghcr.io/lanfir7/hnhmapper-api:main -f dockerfile.api .
+          docker build -t ghcr.io/lanfir7/hnhmapper-api:latest -f dockerfile.api .
           docker push ghcr.io/lanfir7/hnhmapper-api:main
           docker push ghcr.io/lanfir7/hnhmapper-api:latest
 
       - name: Build & push Web
         run: |
-          docker build -t ghcr.io/lanfir7/hnhmapper-web:main -f dockerfile.Web .
-          docker build -t ghcr.io/lanfir7/hnhmapper-web:latest -f dockerfile.Web .
+          docker build -t ghcr.io/lanfir7/hnhmapper-web:main -f dockerfile.web .
+          docker build -t ghcr.io/lanfir7/hnhmapper-web:latest -f dockerfile.web .
           docker push ghcr.io/lanfir7/hnhmapper-web:main
           docker push ghcr.io/lanfir7/hnhmapper-web:latest
